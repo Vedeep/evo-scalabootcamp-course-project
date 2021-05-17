@@ -1,257 +1,173 @@
 package server
 
-import akka.actor.{ActorRef, ActorSystem, Props}
-import cats.effect.concurrent.{Deferred, Ref}
-import cats.effect.{Concurrent, ContextShift, ExitCase, ExitCode, IO, IOApp, Resource, Sync}
+import cats.data.EitherT
+import cats.effect.{ContextShift, ExitCode, IO, IOApp, Timer}
 import cats.implicits._
-import cats.effect.implicits._
-import cats.implicits.catsSyntaxApplicativeId
-import com.evolutiongaming.akkaeffect.{ActorEffect, ActorOf, ActorRefOf, Ask, Call, Envelope, Receive, ReceiveOf, Tell}
-import com.evolutiongaming.catshelper.{FromFuture, ToFuture}
+import io.circe.Json
+import org.http4s.{HttpApp, HttpRoutes}
 import org.http4s.server.blaze.BlazeServerBuilder
+import org.http4s.dsl.io._
+import server.database.{Connection, ConnectionConfig, CurrencyCode, CurrencyName, CurrencyRepository, PlayerFirstName, PlayerLastName, PlayerModel, PlayerNickName, PlayerRepository, Schema, TransactionRepository, WalletBalance, WalletRepository}
+import server.games.Games.GameTypes.BlackJackType
+import server.games.{GamesService, GamesStore}
+import server.websocket.{WebSocketRouter, WebSocketServer}
 import org.http4s.implicits._
-
-import scala.concurrent.duration._
-import server.websocket.WebSocketServer
-
+import org.http4s.server.middleware.CORS
 import java.util.concurrent.Executors
 import scala.concurrent.ExecutionContext
-import server.players.{PlayerActor, PlayerRequest, PlayerResponse}
+import server.games.BlackJack.BlackJackConfig
+import org.typelevel.log4cats.Logger
+import org.typelevel.log4cats.slf4j.Slf4jLogger
+import pdi.jwt.JwtAlgorithm
+import pdi.jwt.algorithms.JwtHmacAlgorithm
+import server.auth.{AuthService, AuthServiceConfig}
+import server.players.PlayerService
+import server.wallets.WalletService
 
-object MainOld extends IOApp {
-  override implicit val executionContext: ExecutionContext
-    = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(10))
-  private val wsRoutes = WebSocketServer.make[IO]
-  private val httpApp = wsRoutes.orNotFound
-
-  override def run(args: List[String]): IO[ExitCode] =
-    BlazeServerBuilder[IO](ExecutionContext.global)
-      .bindHttp(port = 9876, host = "localhost")
-      .withHttpApp(httpApp)
-      .serve
-      .compile
-      .drain
-      .as(ExitCode.Success)
-}
 
 object Main extends IOApp {
-//  implicit val ec: ExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
-  implicit val ec: ExecutionContext = ExecutionContext.global
+  override implicit val executionContext: ExecutionContext
+    = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(10))
 
-  private def getActorSystem(implicit executor: ExecutionContext): Resource[IO, ActorSystem] = {
-    Resource.makeCase[IO, ActorSystem](
-      IO(ActorSystem(
-        name = "test",
-        //          config = config.some,
-        defaultExecutionContext = Some(executor),
+  private def createLogger: Logger[IO] =
+    Slf4jLogger.getLogger[IO]
 
-      )).handleErrorWith(e => {
-        println("on error")
-        println(e)
-        IO(ActorSystem(
-          name = "test",
-          //          config = config.some,
-          defaultExecutionContext = Some(executor),
+  private def createServer(httpApp: HttpApp[IO]): IO[Unit] =
+    BlazeServerBuilder[IO](ExecutionContext.global)
+    .bindHttp(port = 9876, host = "localhost")
+    .withHttpApp(CORS(httpApp))
+    .serve
+    .compile
+    .drain
 
-        ))
-      })
-    )((actorSystem: ActorSystem, ec: ExitCase[Throwable]) =>
-      IO(println("before terminate")) *> IO(println("before terminate", ec)) *>
-      IO.fromFuture(IO.pure(actorSystem.terminate())) *> IO(println("TERMINATED"))
-        *> IO(new Throwable("test").printStackTrace())
+  private def createConnection: IO[Connection[IO]] =
+    Connection.make[IO](new ConnectionConfig {
+      override def driver: String = "org.h2.Driver"
+
+      override def url: String = "jdbc:h2:mem:test;DB_CLOSE_DELAY=-1"
+
+      override def user: String = ""
+
+      override def password: String = ""
+
+      override def poolSize: Int = 4
+    })
+
+  private def createRepositories
+  (
+    connection: Connection[IO]
+  )(implicit logger: Logger[IO]): IO[(
+    PlayerRepository[IO],
+    CurrencyRepository[IO],
+    WalletRepository[IO],
+    TransactionRepository[IO]
+  )] =
+    IO(
+      PlayerRepository.make[IO](connection),
+      CurrencyRepository.make[IO](connection),
+      WalletRepository.make[IO](connection),
+      TransactionRepository.make[IO](connection)
     )
-  }
-
-  private def getActorSystem2(implicit executor: ExecutionContext): IO[ActorRefOf[IO]] =
-    Resource.eval[IO, ActorSystem](IO(ActorSystem(
-      name = "test",
-      defaultExecutionContext = Some(executor),
-    ))).use[IO, ActorRefOf[IO]](system => IO(ActorRefOf.fromActorRefFactory[IO](system)))
-
-  private def receiveOf2: ReceiveOf[IO, Any, Boolean] = ReceiveOf[IO] { ctx =>
-    Resource
-      .eval(IO(new PlayerActor[IO](ctx).asInstanceOf[Receive[IO, Any, Boolean]]))
-  }
-
-  private def actorEffectOf2(actorRefOf: ActorRefOf[IO], receiveOf: ReceiveOf[IO, Any, Boolean]): IO[ActorEffect[IO, Any, Any]] =
-    ActorEffect.of[IO](actorRefOf, receiveOf).use(actor => IO(actor))
-
-  private def receive[F[_]: Concurrent: ToFuture: FromFuture](
-                                                               actorSystem: ActorSystem,
-                                                               shift: F[Unit]
-                                                             ): F[Unit] = {
-
-    case class GetAndInc(delay: F[Unit])
-
-    def receiveOf = ReceiveOf.const {
-      val receive = for {
-        state <- Ref[F].of(0)
-      } yield {
-        Receive[Call[F, Any, Any]] { call =>
-          call.msg match {
-            case a: GetAndInc =>
-              println("on get and inc")
-              for {
-                _ <- shift
-                _ <- a.delay
-                a <- state.modify { a => (a + 1, a) }
-                _ <- call.reply(a)
-              } yield false
-
-            case _ => shift as false
-          }
-        } {
-          false.pure[F]
-        }
-      }
-      Resource.make { shift productR receive } { _ => shift }
-    }
-
-    val actorRefOf = ActorRefOf.fromActorRefFactory[F](actorSystem)
-
-    ActorEffect
-      .of[F](actorRefOf, receiveOf)
-      .use { actorRef =>
-        val timeout = 1.seconds
-
-        def getAndInc(delay: F[Unit]) = {
-          actorRef.ask(GetAndInc(delay), timeout)
-        }
-
-        for {
-          a   <- getAndInc(().pure[F]).flatten
-        } yield {}
-      }
-  }
-
-  case class Message1()
-  case class Message2()
-
-  private def receiveOf: ReceiveOf[IO, Call[IO, Any, Any], Boolean] = ReceiveOf[IO] { ctx =>
-    Resource.eval(IO(new PlayerActor[IO](ctx).asInstanceOf[Receive[IO, Any, Boolean]]))
-//    Resource.make(
-//      IO(println("tezd")).map(_ => new PlayerActor[IO](ctx).asInstanceOf[Receive[IO, Any, Boolean]]).handleErrorWith(e => {
-//        println("on error")
-//        println(e)
-//        IO(new PlayerActor[IO](ctx).asInstanceOf[Receive[IO, Any, Boolean]])
-//      })
-//    )( res =>
-//      IO(println("on resource close", res))
-//    )
-  }
 
   override def run(args: List[String]): IO[ExitCode] = {
-//    val testRes = Resource.make(
-//      IO(ActorSystem(
-//        name = "test",
-//        //          config = config.some,
-//        defaultExecutionContext = Some(ec),
-//
-//      ))
-//    )(actorSystem =>
-//      IO.fromFuture(IO.pure(actorSystem.terminate())) *> IO(println("TERMINATED"))
-////      IO(println("Release Start")) *>
-////        IO.sleep(1.second) *>
-////        IO(println("Release Finish"))
-//    )
-
-//    def getAllActors: IO[ActorEffect[IO, Any, Any]] = {
-//      for {
-//        actorSystem <- getActorSystem
-//        actorRefOf   = ActorRefOf.fromActorRefFactory[IO](actorSystem)
-//        actor       <- ActorEffect.of[IO](actorRefOf, receiveOf)
-//      } yield actor
-//    }
+    implicit val logger: Logger[IO] = createLogger
 
     for {
-      stopped <- Deferred[IO, Unit]
-//      fiber <- testRes.use(_ =>
-//        IO(println("Operation Start")) *>
-//          IO.sleep(1.second) *>
-//          IO(println("Operation Finish"))
-//      ).start
-//      _ <- fiber.join
+      _            <- logger.info("Start application")
+      connection   <- createConnection
+      _            <- logger.info("Connection created")
+      _            <- Schema.createTables[IO](connection)
+      _            <- logger.info("Tables created")
+      repositories <- createRepositories(connection)
+      _            <- logger.info("Repositories created")
+      playerRepo   = repositories._1
+      currencyRepo = repositories._2
+      walletRepo   = repositories._3
+      transRepo    = repositories._4
+      authService  <- IO(AuthService.make[IO](new AuthServiceConfig {
+        override val secretKey: String = "my-secret-key"
 
-//      _ <- testRes.use { _ =>
-//        IO(println("I use it")) *> stopped.get *> IO(println("on stopped get"))
-//      }.start
-//      actorSystemF <- getActorSystem2.start
-//      actorSystem  <- actorSystemF.join
-//      receive      <- IO(receiveOf2)
-//      myActorF     <- actorEffectOf2(actorSystem, receive).start
-//      myActor      <- myActorF.join
-//      _ <- IO(println(myActor, actorSystem))
-//      _ <- myActor.tell(Message1())
-//      _ <- myActor.tell(Message2())
-//      _ <- myActor.tell(Message1())
-//      myActor2     <- actorEffectOf2(actorSystem, receive)
-//      _ <- myActor2.tell(Message1())
-//      _ <- myActor2.tell(Message2())
-//      _ <- myActor2.tell(Message1())
+        override val algo: JwtHmacAlgorithm = JwtAlgorithm.HS256
 
-      fiber2 <- getActorSystem.use { system: ActorSystem =>
-        for {
-          actorRefOf <- IO(ActorRefOf.fromActorRefFactory[IO](system))
-          _ <- IO(println("actor ref", actorRefOf))
-          fiber <- ActorEffect.of[IO](actorRefOf, receiveOf).use { actor =>
-            val tell = Tell.fromActorRef[IO](actor.toUnsafe)
-            val ask = Ask.fromActorRef[IO](actor.toUnsafe)
+        override val expirationSeconds: Long = 60 * 60 * 24
+      }))
 
-
-            tell(Message1())
-              .productR({
-                println("test")
-                tell(Message2())
-              })
-              .productR(tell(Message2()))
-              .map(_ => println("telled"))
-              .map(_ => println("after stopped"))
-              .flatMap(_ => IO.sleep(3.seconds))
-          }.start
-          _ <- fiber.join
-          _ <- ActorEffect.of[IO](actorRefOf, receiveOf).use { actor =>
-            IO(println("getted res", actor))
-            val tell = Tell.fromActorRef[IO](actor.toUnsafe)
-            val ask = Ask.fromActorRef[IO](actor.toUnsafe)
-
-            IO.delay()
-            .flatMap(_ =>
-            tell(Message1())
-              .productR({
-                println("test")
-                tell(Message2())
-              })
-              .productR(tell(Message2()))
-              .map(_ => println("telled"))
-//              .productR(stopped.get)
-              .map(_ => println("after stopped")))
-
-          }
-          _ <- stopped.get.map(_ => "ON HARD STOPPED")
-        } yield println("stopped anus")
-
-//        stopped.get.map(_ => "ON HARD STOPPED")
-//        receive(system, ContextShift[IO].shift)
-      }
-//      _ <- fiber2.join
-//      _ <- IO.sleep(1.seconds).foreverM
-//      actorSystem = getActorSystem
-//      _ <- receive[IO]
-//      actorSystem <- getActorSystem
-//      actorRefOf = ActorRefOf.fromActorRefFactory[IO](actorSystem)
-//      receiveOf = ReceiveOf[IO] { ctx =>
-//        Resource.make {
-//          IO.delay(new PlayerActor[IO](ctx))
-//        } { actor =>
-//          IO.pure()
-//        }
-//      }
-//      test = ActorOf[IO](receiveOf.asInstanceOf[ReceiveOf[IO, Envelope[Any], Boolean]])
-//      player <- actorRefOf(Props(test))
-//      actor <- ActorOf[IO] { ctx =>
-//
-//      }
-//      actor <- ActorOf(ReceiveOf[IO] { actorCtx => new PlayerActor[IO](actorCtx) })
+      playerService <- IO(PlayerService.make[IO](playerRepo))
+      walletService <- IO(WalletService.make[IO](connection, walletRepo, transRepo))
+      gamesService  <- IO(GamesService.make[IO](walletService))
+      gamesStore    <- gamesService.createStore
+      router   = WebSocketRouter.make[IO](playerService, walletService, gamesService, gamesStore)
+      wsRoutes = WebSocketServer.make[IO](authService, playerService, gamesService, gamesStore, router)
+      demoRoutes <- Demo.start(authService, gamesService, gamesStore, playerRepo, currencyRepo, walletRepo)
+      httpApp  = (wsRoutes <+> demoRoutes).orNotFound
+      _ <- createServer(httpApp)
     } yield ExitCode.Success
+  }
+}
+
+object Demo {
+  private def createDemoData
+  (
+    playerRepo: PlayerRepository[IO],
+    currencyRepo: CurrencyRepository[IO],
+    walletRepo: WalletRepository[IO]
+  )(implicit logger: Logger[IO]): IO[(PlayerModel, PlayerModel)] = (for {
+    player1   <- EitherT(playerRepo.create(PlayerFirstName("Vasia"), PlayerLastName("Pupkin"), PlayerNickName("VasPupkin")))
+    player2   <- EitherT(playerRepo.create(PlayerFirstName("Petia"), PlayerLastName("Ivanov"), PlayerNickName("PetIvanov")))
+
+    currency1 <- EitherT(currencyRepo.create(CurrencyName("Euro"), CurrencyCode("EUR"), exchangeRate = 1, main = true))
+    currency2 <- EitherT(currencyRepo.create(CurrencyName("Dollar"), CurrencyCode("USD"), exchangeRate = 1.2))
+
+    wallet1   <- EitherT(walletRepo.create(player1.id, currency1.id, WalletBalance(10000)))
+    wallet2   <- EitherT(walletRepo.create(player2.id, currency2.id, WalletBalance(5000)))
+  } yield (player1, player2)).value.map {
+    case Right((p1, p2)) => (p1, p2)
+    case _ => throw new Exception("Players were not created")
+  }
+
+  def start
+  (
+    authService: AuthService[IO],
+    gamesService: GamesService[IO],
+    gameStore: GamesStore[IO],
+    playerRepo: PlayerRepository[IO],
+    currencyRepo: CurrencyRepository[IO],
+    walletRepo: WalletRepository[IO]
+  )(implicit CS: ContextShift[IO], T: Timer[IO], logger: Logger[IO]): IO[HttpRoutes[IO]] = {
+    for {
+      players <- createDemoData(playerRepo, currencyRepo, walletRepo)
+      player1 = players._1
+      player2 = players._2
+      token1 <- authService.createToken(player1.id)
+      token2 <- authService.createToken(player2.id)
+      games  <- (1 to 10).toList.traverse(_ => gamesService.createGame[BlackJackConfig](BlackJackType, new BlackJackConfig {
+        override def seatCount: Int = 7
+
+        override def playerSeatsLimit: Int = 1
+
+        override def roundStateSeconds: Int = 10
+
+        override def roundIntervalSeconds: Int = 10
+      }))
+      _ <- games.traverse(_.start.start)
+      _ <- games.traverse(gameStore.addGame)
+      routes <- IO.delay {
+        import io.circe.syntax._
+        import io.circe.generic.auto._
+
+        HttpRoutes.of[IO] {
+          case GET -> Root / "users" =>
+            Ok(
+              List((player1.nickName.value, token1), (player2.nickName.value, token2))
+                .map { p =>
+                  Json.obj(
+                    ("nickName", p._1.asJson),
+                    ("token", p._2.asJson)
+                  )
+                }.asJson.noSpaces
+            )
+        }
+      }
+    } yield routes
   }
 }

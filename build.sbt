@@ -7,12 +7,11 @@ ThisBuild / name             := "evobootcamp-black-jack"
 val scalaTestVersion = "3.1.0.0-RC2"
 val catsVersion = "2.2.0"
 val catsEffectVersion = "2.2.0"
-val akkaVersion = "2.5.31"
-val akkaHttpVersion = "10.1.11"
-val akkaHttpCirceVersion = "1.31.0"
 val http4sVersion = "0.21.22"
 val circeVersion = "0.13.0"
 val doobieVersion = "0.9.0"
+val log4CatsVersion = "1.2.0"
+val jwtVersion = "7.1.4"
 
 lazy val root = (project in file("."))
   .settings(
@@ -26,8 +25,7 @@ lazy val tests = (project in file("modules/tests"))
     name := "black-jack-tests",
     Defaults.itSettings,
     libraryDependencies ++= Seq(
-      "org.scalatestplus" %% "scalatestplus-scalacheck" % scalaTestVersion % Test,
-      "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test
+      "org.scalatestplus" %% "scalatestplus-scalacheck" % scalaTestVersion % Test
     )
   ).dependsOn(core)
 
@@ -39,13 +37,8 @@ lazy val core = (project in file("modules/core"))
       "org.scala-lang.modules" %% "scala-parser-combinators" % "1.1.2",
       "org.typelevel" %% "cats-core" % catsVersion,
       "org.typelevel" %% "cats-effect" % catsEffectVersion,
-//      "com.typesafe.akka" %% "akka-http" % akkaHttpVersion,
-//      "de.heikoseeberger" %% "akka-http-circe" % akkaHttpCirceVersion,
-//      "com.typesafe.akka" %% "akka-stream-typed" % akkaVersion,
-//      "com.typesafe.akka" %% "akka-actor-typed" % akkaVersion,
-//      "com.typesafe.akka" %% "akka-persistence-typed" % akkaVersion,
-//      "com.typesafe.akka" %% "akka-cluster-typed" % akkaVersion,
-//      "com.typesafe.akka" %% "akka-cluster-sharding-typed" % akkaVersion,
+      "org.typelevel" %% "log4cats-core" % log4CatsVersion,
+      "org.typelevel" %% "log4cats-slf4j" % log4CatsVersion,
       "org.http4s" %% "http4s-dsl" % http4sVersion,
       "org.http4s" %% "http4s-blaze-server" % http4sVersion,
       "org.http4s" %% "http4s-blaze-client" % http4sVersion,
@@ -59,11 +52,10 @@ lazy val core = (project in file("modules/core"))
       "org.tpolecat" %% "doobie-core" % doobieVersion,
       "org.tpolecat" %% "doobie-h2" % doobieVersion,
       "org.tpolecat" %% "doobie-hikari" % doobieVersion,
-      // Tests
-      "org.scalatestplus" %% "scalatestplus-scalacheck" % scalaTestVersion % Test,
-      "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test,
+      "ch.qos.logback" % "logback-classic" % "1.2.3",
+      "com.github.jwt-scala" %% "jwt-core" % jwtVersion,
 
-      "com.evolutiongaming" %% "akka-effect-actor" % "0.1.0",
-      "com.evolutiongaming" %% "akka-effect-persistence" % "0.1.0"
+      // Tests
+      "org.scalatestplus" %% "scalatestplus-scalacheck" % scalaTestVersion % Test
     )
   )
