@@ -5,13 +5,15 @@ import application.common.EntityId
 import application.common.Errors.{AppError, DBError}
 import application.common.Errors.DBErrors.CreationError
 import application.common.Errors.UserErrors.UserIsNotFound
+import cats.effect.Sync
+import cats.syntax.all._
 import doobie.implicits._
 
-case class PlayerFirstName(value: String) extends AnyVal
-case class PlayerLastName(value: String) extends AnyVal
-case class PlayerNickName(value: String) extends AnyVal
+final case class PlayerFirstName(value: String) extends AnyVal
+final case class PlayerLastName(value: String) extends AnyVal
+final case class PlayerNickName(value: String) extends AnyVal
 
-case class PlayerModel
+final case class PlayerModel
 (
   id: EntityId,
   firstName: PlayerFirstName,
@@ -25,9 +27,9 @@ trait PlayerRepository[F[+_]] {
 }
 
 object PlayerRepository {
-  import application.common.EntityId.implicits._
+  import application.common.EntityId.implicits.db._
 
-  def make[F[+_] : Logger](connection: Connection[F]): PlayerRepository[F] = new PlayerRepository[F] {
+  def make[F[+_] : Logger : Sync](connection: Connection[F]): PlayerRepository[F] = new PlayerRepository[F] {
     override def getById(id: EntityId): F[Either[AppError, (PlayerModel, WalletModel, CurrencyModel)]] =
       connection.runQuery(
         sql"""SELECT p.id, p.firstName, p.lastName, p.nickName,
@@ -49,20 +51,22 @@ object PlayerRepository {
       lastName: PlayerLastName,
       nick: PlayerNickName
     ): F[Either[DBError, PlayerModel]] =
-      connection.runQuery(
-        sql"""INSERT INTO Players (id, firstName, lastName, nickName)
-             |VALUES (${EntityId()}, ${firstName}, ${lastName}, ${nick});"""
-          .stripMargin
-          .update
-          .withGeneratedKeys[EntityId]("id")
-          .map { id =>
-            PlayerModel(id, firstName, lastName, nick)
-          }
-          .attemptSomeSqlState {
-            case _ => CreationError
-          }
-          .compile
-          .lastOrError
-      )
+      EntityId.of[F].flatMap { eid =>
+        connection.runQuery(
+          sql"""INSERT INTO Players (id, firstName, lastName, nickName)
+               |VALUES (${eid}, ${firstName}, ${lastName}, ${nick});"""
+            .stripMargin
+            .update
+            .withGeneratedKeys[EntityId]("id")
+            .map { id =>
+              PlayerModel(id, firstName, lastName, nick)
+            }
+            .attemptSomeSqlState {
+              case _ => CreationError
+            }
+            .compile
+            .lastOrError
+        )
+      }
   }
 }

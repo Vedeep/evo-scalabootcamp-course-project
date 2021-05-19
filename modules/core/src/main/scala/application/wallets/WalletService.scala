@@ -21,10 +21,10 @@ trait WalletService[F[+_]] {
   def getBalance(walletId: EntityId): F[Either[WalletError, Double]]
 }
 
-case class WalletTransactionAmount(value: Double) extends AnyVal
-case class WalletTransaction(transactionType: TransactionType, amount: WalletTransactionAmount)
-case class WalletTransactionId(value: EntityId)
-case class WalletTransactionResult(transactionId: EntityId)
+final case class WalletTransactionAmount(value: Double) extends AnyVal
+final case class WalletTransaction(transactionType: TransactionType, amount: WalletTransactionAmount)
+final case class WalletTransactionId(value: EntityId)
+final case class WalletTransactionResult(transactionId: EntityId)
 
 object WalletService {
   import application.database.TransactionTypes._

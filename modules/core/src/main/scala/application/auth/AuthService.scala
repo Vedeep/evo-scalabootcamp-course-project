@@ -13,16 +13,12 @@ trait AuthService[F[_]] {
   def createToken(playerId: EntityId): F[String]
 }
 
-trait AuthServiceConfig {
-  def secretKey: String
-  def algo: JwtHmacAlgorithm
-  def expirationSeconds: Long
-}
+final case class AuthServiceConfig(secretKey: String, algo: JwtHmacAlgorithm, expirationSeconds: Long)
 
-case class TokenData(id: EntityId)
+final case class TokenData(id: EntityId)
 
 object AuthService {
-  import application.common.EntityId.implicits._
+  import application.common.EntityId.implicits.json._
   import io.circe.jawn.decode
   import io.circe.generic.auto._
   import io.circe.syntax._
@@ -30,9 +26,8 @@ object AuthService {
   def make[F[_] : Sync](config: AuthServiceConfig): AuthService[F] = new AuthService[F] {
     override def getPlayerIdFromToken(token: String): F[Option[EntityId]] =
       Sync[F].delay {
-        Jwt.decode(token, config.secretKey, Seq(config.algo)) match {
-          case Success(value) => decode[TokenData](value.content).map(_.id).toOption
-          case Failure(_) => None
+        Jwt.decode(token, config.secretKey, Seq(config.algo)).toOption.flatMap { value =>
+          decode[TokenData](value.content).map(_.id).toOption
         }
       }
 

@@ -1,7 +1,7 @@
 package application.games
 
 import cats.data.EitherT
-import cats.effect.{Concurrent, Timer}
+import cats.effect.{Concurrent, Sync, Timer}
 import cats.effect.concurrent.Ref
 import cats.implicits._
 
@@ -179,85 +179,83 @@ object BlackJack {
         }
       }.flatMap(Concurrent[F].whenA(_)(sendState))
 
-    private def startRound: F[Either[BlackJackError, BlackJackGameStateRound]] =
-      state.modifyOr { current =>
+    private def getHands(state: BlackJackGameState): F[List[Hand]] = {
+      def recursive(seats: List[(EntityId, Option[Player])], hands: List[Hand]): F[List[Hand]] =
+        seats match {
+          case Nil => Concurrent[F].pure(hands)
+          case (seatId, Some(player)) :: xs => Hand[F](seatId, player).flatMap(hand => recursive(xs, hand :: hands))
+          case _ :: xs => recursive(xs, hands)
+        }
+
+      recursive(state.seats.toList, Nil);
+    }
+
+    private def getDefaultHandActions(hands: List[Hand]): Map[Hand, List[BlackJackAction]] =
+      hands.foldLeft(Map.empty[Hand, List[BlackJackAction]]) { (acc, hand) =>
+        acc + (hand -> List(BlackJackActions.AddStake))
+      }
+
+    private def startRound: F[Either[BlackJackError, BlackJackGameStateRound]] = {
+      EitherT(state.get.map { current =>
         if (isSeatsEmpty(current.seats))
           Left(TableIsEmpty)
         else if (isRoundStarted(current.currentRound))
           Left(RoundAlreadyStarted)
-        else {
-          val hands: List[Hand] = current.seats
-            .foldLeft[List[Hand]](Nil)((acc, seat) => {
-              seat match {
-                case (seatId, Some(player)) => Hand(seatId, player) :: acc
-                case _ => acc
-              }
-            })
-
-          val handsActions = hands.foldLeft(Map.empty[Hand, List[BlackJackAction]]) { (acc, hand) =>
-            acc + (hand -> List(BlackJackActions.AddStake))
-          }
-
-          val nextState = Instant.now().plusSeconds(config.roundStateSeconds)
-
-          val round = BlackJackGameStateRound(
+        else
+          Right(current)
+      }).semiflatMap { current =>
+        for {
+          hands <- getHands(current)
+          handsActions = getDefaultHandActions(hands)
+          nextState <- Concurrent[F].delay(Instant.now().plusSeconds(config.roundStateSeconds))
+          round = BlackJackGameStateRound(
             hands = hands,
             handActions = handsActions,
             nextStateTime = nextState
           )
-
-          Right(current.copy(
+          _ <- state.update(_.copy(
             nextRoundTime = None,
             currentRound = Some(round)
-          ) -> round)
-        }
-      }.flatMap {
-        case result @ Right(_) => sendState *> deck.shuffle *> Concurrent[F].pure(result)
-        case error  @ Left(_)  => Concurrent[F].pure(error)
+          ))
+          _ <- sendState
+          _ <- deck.shuffle
+        } yield round
       }
+    }.value
 
     private def doRound: F[Unit] =
-      state.get.flatMap { current =>
-        current.currentRound match {
-          case Some(round) if round.nextStateTime.isBefore(Instant.now()) =>
-            round.state match {
-              case BlackJackRoundStates.Stakes => setRoundStateAsCards
-              case BlackJackRoundStates.Cards  => endRound
-              case _ => Concurrent[F].pure()
-            }
-
-          case _ => Concurrent[F].pure()
-        }
-      }
+      EitherT(getCurrentRound).semiflatMap { round =>
+        if (round.nextStateTime.isBefore(Instant.now())) {
+          round.state match {
+            case BlackJackRoundStates.Stakes => setRoundStateAsCards
+            case BlackJackRoundStates.Cards  => endRound
+            case _ => Concurrent[F].pure()
+          }
+        } else
+          Concurrent[F].pure()
+      }.value.void
 
     private def endRound: F[Unit] =
       stopAcceptingActions *>
-      state.get.flatMap { current =>
-        current.currentRound match {
-          case Some(round) if round.state != BlackJackRoundStates.Ended =>
-            for {
-              dealerCards <- getDealerCards(round.dealerCards)
-              handCards   <- Concurrent[F].delay(round.handCards.filterNot(_._2.isEmpty).toList)
-              results = calculator.calculateAll(
-                dealerCards,
-                handCards
+        EitherT(getCurrentRound).semiflatMap { round =>
+          for {
+            dealerCards <- getDealerCards(round.dealerCards)
+            handCards   <- Concurrent[F].delay(round.handCards.filterNot(_._2.isEmpty).toList)
+            results = calculator.calculateAll(
+              dealerCards,
+              handCards
+            )
+            _ <- updateCurrentRound { round =>
+              round.copy(
+                dealerCards = if (handCards.nonEmpty) dealerCards else round.dealerCards,
+                results = if (handCards.nonEmpty) results else round.results,
+                state = BlackJackRoundStates.Ended
               )
-              _ <- state.update { oldState =>
-                oldState.copy(
-                  currentRound = round.copy(
-                    dealerCards = if (handCards.nonEmpty) dealerCards else round.dealerCards,
-                    results = if (handCards.nonEmpty) results else round.results,
-                    state = BlackJackRoundStates.Ended
-                  ).some
-                )
-              }
-              _ <- enrollResults
-              _ <- sendState
-            } yield ()
-
-          case _ => Concurrent[F].pure()
-        }
-      }
+            }
+            _ <- Concurrent[F].start(enrollResults)
+            _ <- sendState
+          } yield ()
+        }.value.void
 
     private def getCards(count: Int): F[List[Card]] = deck.getCards(count)
 
@@ -274,35 +272,19 @@ object BlackJack {
     }
 
     private def stopAcceptingStakes: F[Unit] =
-      state.update { current =>
-        current.currentRound match {
-          case Some(round) =>
-            current.copy(
-              currentRound = round.copy(
-                handActions = round.handActions.map { ha =>
-                  val (hand, actions) = ha
-                  (hand, actions.filterNot(_ == BlackJackActions.AddStake))
-                }
-              ).some
-            )
-
-          case None => current
-        }
-      }
+      updateCurrentRound { round =>
+        round.copy(
+          handActions = round.handActions.map { ha =>
+            val (hand, actions) = ha
+            (hand, actions.filterNot(_ == BlackJackActions.AddStake))
+          }
+        )
+      }.void
 
     private def stopAcceptingActions: F[Unit] =
-      state.update { current =>
-        current.currentRound match {
-          case Some(round) =>
-            current.copy(
-              currentRound = Some(
-                round.copy(handActions = Map.empty)
-              )
-            )
-
-          case None => current
-        }
-      }
+      updateCurrentRound { round =>
+        round.copy(handActions = Map.empty)
+      }.void
 
     private def stopAcceptingHandActions(handId: EntityId, playerId: EntityId): F[List[BlackJackAction]] =
       state.modify { current =>
@@ -327,37 +309,21 @@ object BlackJack {
       }
 
     private def startAcceptingHandActions(handId: EntityId): F[Unit] =
-      state.update { current =>
-        current.currentRound match {
-          case Some(round) =>
-            val hand = round.hands.find(_.id == handId)
-
-            hand match {
-              case Some(hand) =>
-                val newActions = getHandActions(current, hand)
-
-                current.copy(
-                  currentRound = round.copy(
-                    handActions = round.handActions + (hand -> newActions)
-                  ).some
-                )
-
-              case None => current
-            }
-
-          case None => current
-        }
-      }
+      updateCurrentRound { round =>
+        (for {
+          hand <- round.hands.find(_.id == handId)
+          newActions = getHandActions(round, hand)
+        } yield round.copy(
+          handActions = round.handActions + (hand -> newActions)
+        )).getOrElse(round)
+      }.void
 
     private def extendRoundState(): F[Unit] =
-      state.update { current =>
-        current.currentRound match {
-          case Some(round) => current.copy(
-            currentRound = round.copy(nextStateTime = Instant.now().plusSeconds(config.roundStateSeconds)).some
-          )
-          case None => current
-        }
-      }
+      updateCurrentRound { round =>
+        round.copy(
+          nextStateTime = Instant.now().plusSeconds(config.roundStateSeconds)
+        )
+      }.void
 
     private def getActiveHands: F[List[Hand]] =
       state.get.map { current =>
@@ -376,6 +342,25 @@ object BlackJack {
         })
       } yield result
 
+    private def updateCurrentRound(f: BlackJackGameStateRound => BlackJackGameStateRound): F[Either[BlackJackError, BlackJackGameState]] =
+      state.modifyOr { oldState =>
+        oldState.currentRound match {
+          case Some(round) =>
+            val newState = oldState.copy(currentRound = f(round).some)
+            (newState, newState).asRight
+
+          case None        => RoundNotStarted.asLeft
+        }
+      }
+
+    private def getCurrentRound: F[Either[BlackJackError, BlackJackGameStateRound]] =
+      state.get.map { state =>
+        state.currentRound match {
+          case Some(round) if round.state != BlackJackRoundStates.Ended => round.asRight
+          case _ => RoundNotStarted.asLeft
+        }
+      }
+
     private def setRoundStateAsCards: F[Unit] =
       (stopAcceptingStakes *> getActiveHands).flatMap { hands =>
         if (hands.isEmpty)
@@ -386,36 +371,24 @@ object BlackJack {
             dealerCards <- getCards(1)
             results     <- Concurrent[F].delay(calculator.calculateAll(dealerCards, handCards.toList, isFinally = false))
             nextTime    <- Concurrent[F].delay(Instant.now().plusSeconds(config.roundStateSeconds))
-            _           <- state.update { current =>
-              current.currentRound match {
-                case Some(round) =>
-                  val newState = current.copy(
-                    currentRound = Some(
-                      round.copy(
-                        state = BlackJackRoundStates.Cards,
-                        nextStateTime = nextTime,
-                        dealerCards = dealerCards,
-                        handCards = handCards,
-                        results = results
-                      )
-                    )
-                  )
+            result      <- updateCurrentRound { round =>
+              val newRound = round.copy(
+                state = BlackJackRoundStates.Cards,
+                nextStateTime = nextTime,
+                dealerCards = dealerCards,
+                handCards = handCards,
+                results = results
+              )
 
-                  newState.copy(
-                    currentRound = newState.currentRound.map(
-                      _.copy(
-                        handActions = round.hands.foldLeft[Map[Hand, List[BlackJackAction]]](Map.empty) { (acc, hand) =>
-                          acc + (hand -> getHandActions(newState, hand))
-                        }
-                      )
-                    )
-                  )
-
-                case None => current
-              }
+              newRound.copy(
+                // @TODO
+                handActions = round.hands.foldLeft[Map[Hand, List[BlackJackAction]]](Map.empty) { (acc, hand) =>
+                  acc + (hand -> getHandActions(round, hand))
+                }
+              )
             }
-            _ <- sendState // @TODO
-          } yield ()
+            _ <- EitherT.fromEither[F](result).semiflatMap(_ => sendState).value
+          } yield result
       }
 
     private def enrollResults: F[Unit] =
@@ -478,31 +451,23 @@ object BlackJack {
         case error  @ Left(_)  => Concurrent[F].pure(error)
       }
 
-    private def getHandActions(state: BlackJackGameState, hand: Hand): List[BlackJackAction] = {
-      state.currentRound match {
-        case Some(round) => round.state match {
-          case BlackJackRoundStates.Stakes =>
-            if (!round.stakes.contains(hand))
-              List(BlackJackActions.AddStake)
-            else
-              Nil
+    private def getHandActions(round: BlackJackGameStateRound, hand: Hand): List[BlackJackAction] =
+      round.state match {
+        case BlackJackRoundStates.Stakes if !round.stakes.contains(hand) =>
+          List(BlackJackActions.AddStake)
 
-          case BlackJackRoundStates.Cards if round.stakes.contains(hand) =>
-            if (round.handActions.getOrElse(hand, Nil).contains(BlackJackActions.StandCards))
-              Nil
-            else
-              round.results.find(_.hand.contains(hand)) match {
-                case Some(result) if result.points >= calculator.getMaxPoints =>
-                  Nil
-                case _ => List(BlackJackActions.AddCard, BlackJackActions.StandCards)
-              }
+        case BlackJackRoundStates.Cards if round.stakes.contains(hand) =>
+          if (round.handActions.getOrElse(hand, Nil).contains(BlackJackActions.StandCards))
+            Nil
+          else
+            round.results.find(_.hand.contains(hand)) match {
+              case Some(result) if result.points >= calculator.getMaxPoints =>
+                Nil
+              case _ => List(BlackJackActions.AddCard, BlackJackActions.StandCards)
+            }
 
-          case _ => Nil
-        }
-
-        case None => Nil
+        case _ => Nil
       }
-    }
 
     private def getRoundAndHand
     (
@@ -516,34 +481,27 @@ object BlackJack {
 
     def addStake(handId: EntityId, player: Player, amount: Amount): F[Either[AppError, Unit]] = {
       stopAcceptingHandActions(handId, player.id).flatMap { actions =>
-        if (actions.contains(BlackJackActions.AddStake)) {
-          sendState *>
-          (for {
-            roundAndHand <- EitherT[F, AppError, (BlackJackStateRound, Hand)](
-              state.get.map(getRoundAndHand(_, handId))
-            )
-            (_, hand) = roundAndHand
+        (for {
+          _ <- EitherT.cond[F](actions.contains(BlackJackActions.AddStake), (), ActionIsNotAllowed)
+          roundAndHand <- EitherT(state.get.map(getRoundAndHand(_, handId)))
+          (_, hand) = roundAndHand
 
-            _ <- EitherT[F, AppError, WalletTransactionResult](
-              walletService.doTransaction(hand.holder.wallet, WalletTransaction(
-                Withdrawal,
-                WalletTransactionAmount(amount.value)
-              )
-            ))
-            _ <- EitherT[F, AppError, Unit](state.modifyOr { current =>
-              for {
-                data <- getRoundAndHand(current, handId)
-                (round, hand) = data
-              } yield (current.copy(
-                currentRound = round.copy(
-                  stakes = round.stakes + (hand -> amount)
-                ).some
-              ), ())
-            })
-          } yield ()).value
-        } else {
-          Concurrent[F].pure(ActionIsNotAllowed.asLeft)
-        }
+          _ <- EitherT(walletService.doTransaction(hand.holder.wallet, WalletTransaction(
+            Withdrawal,
+            WalletTransactionAmount(amount.value)
+          )))
+
+          _ <- EitherT[F, AppError, Unit](state.modifyOr { current =>
+            for {
+              data <- getRoundAndHand(current, handId)
+              (round, hand) = data
+            } yield (current.copy(
+              currentRound = round.copy(
+                stakes = round.stakes + (hand -> amount)
+              ).some
+            ), ())
+          })
+        } yield ()).value
       }.flatMap { res =>
         startAcceptingHandActions(handId) *>
         sendState *>
@@ -573,29 +531,17 @@ object BlackJack {
 
     def addCard(handId: EntityId, player: Player): F[Either[BlackJackError, BlackJackGameState]] =
       stopAcceptingHandActions(handId, player.id).flatMap { actions =>
-        if (actions.contains(BlackJackActions.AddCard))
-          state.get.flatMap { current =>
-            current.currentRound match {
-              case Some(round) =>
-                if (round.state != BlackJackRoundStates.Cards)
-                  Concurrent[F].pure(ActionIsNotAllowed.asLeft)
-                else
-                  round.hands.find(_.id == handId) match {
-                    case Some(hand) =>
-                      (for {
-                        cards <- EitherT.liftF[F, BlackJackError, List[Card]](getCards(1))
-                        _     <- EitherT[F, BlackJackError, Unit](addHandCards(hand, cards))
-                        state <- EitherT.liftF[F, BlackJackError, BlackJackGameState](state.get)
-                      } yield  state).value
-
-                    case None => Concurrent[F].pure(HandIsNotFound.asLeft)
-                  }
-
-              case None => Concurrent[F].pure(RoundNotStarted.asLeft)
-            }
-          }
-        else
-          Concurrent[F].pure(ActionIsNotAllowed.asLeft)
+        (for {
+          _     <- EitherT.cond[F](actions.contains(BlackJackActions.AddCard), (), ActionIsNotAllowed)
+          round <- EitherT.fromOptionF(
+            state.get.map(_.currentRound.filter(_.state == BlackJackRoundStates.Cards)),
+            RoundNotStarted
+          )
+          hand  <- EitherT.fromOption[F](round.hands.find(_.id == handId), HandIsNotFound)
+          cards <- EitherT.liftF[F, BlackJackError, List[Card]](getCards(1))
+          _     <- EitherT(addHandCards(hand, cards))
+          state <- EitherT.liftF[F, BlackJackError, BlackJackGameState](state.get)
+        } yield state).value
       }.flatMap {
         case result @ Right(_) =>
           startAcceptingHandActions(handId) *>
@@ -629,7 +575,7 @@ object BlackJack {
       } yield BlackJackGameInfo(id, playerCount.size, config.seatCount, GameTypes.BlackJackType)
   }
 
-  case class BlackJackGameInfo(id: EntityId, playerCount: Int, maxPlayerCount: Int, gameType: GameType)
+  final case class BlackJackGameInfo(id: EntityId, playerCount: Int, maxPlayerCount: Int, gameType: GameType)
     extends GameInfo
 
   trait BlackJackStateRound {
@@ -646,7 +592,7 @@ object BlackJack {
     def currentRound: Option[BlackJackStateRound]
   }
 
-  case class BlackJackGameStateRound
+  final case class BlackJackGameStateRound
   (
     hands: List[Hand],
     nextStateTime: Instant,
@@ -658,7 +604,7 @@ object BlackJack {
     results: List[CalculatorResult] = Nil
   ) extends BlackJackStateRound
 
-  case class BlackJackGameState
+  final case class BlackJackGameState
   (
     seats: Map[EntityId, Option[Player]],
     status: GameStatus,
@@ -667,12 +613,14 @@ object BlackJack {
   ) extends BlackJackState
 
   object BlackJackGameState {
-    def apply(config: BlackJackConfig): BlackJackGameState = {
-      val seats = (1 to config.seatCount).foldLeft[Map[EntityId, Option[Player]]](Map.empty) { (acc, _) =>
-        acc + (EntityId() -> None)
-      }
+    def apply[F[_] : Sync](config: BlackJackConfig): F[BlackJackGameState] = {
+      def recursive(seats: List[(EntityId, Option[Player])], seatCount: Int): F[BlackJackGameState] =
+        if (seatCount > 0)
+          EntityId.of[F].flatMap(eid => recursive((eid, None) :: seats, seatCount - 1))
+        else
+          Sync[F].pure(BlackJackGameState(seats.toMap, New, None))
 
-      BlackJackGameState(seats, New, None)
+      recursive(Nil, config.seatCount)
     }
   }
 
@@ -836,15 +784,16 @@ trait Hand {
 }
 
 object Hand {
-  def apply(_seatId: EntityId, _player: Player, _main: Boolean = true): Hand = {
-    new Hand {
-      override val id: EntityId = EntityId()
+  def apply[F[_]: Sync](_seatId: EntityId, _player: Player, _main: Boolean = true): F[Hand] =
+    EntityId.of[F].map { eid =>
+      new Hand {
+        override val id: EntityId = eid
 
-      override val holder: Player = _player
+        override val holder: Player = _player
 
-      override val main: Boolean = _main
+        override val main: Boolean = _main
 
-      override def seatId: EntityId = _seatId
+        override def seatId: EntityId = _seatId
+      }
     }
-  }
 }

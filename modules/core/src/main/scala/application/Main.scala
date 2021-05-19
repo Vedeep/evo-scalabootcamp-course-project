@@ -1,7 +1,7 @@
 package application
 
 import cats.data.EitherT
-import cats.effect.{ContextShift, ExitCode, IO, IOApp, Timer}
+import cats.effect.{Blocker, ContextShift, ExitCode, IO, IOApp, Timer}
 import cats.implicits._
 import io.circe.Json
 import org.http4s.{HttpApp, HttpRoutes}
@@ -13,6 +13,7 @@ import application.games.{GamesService, GamesStore}
 import application.websocket.{WebSocketRouter, WebSocketServer}
 import org.http4s.implicits._
 import org.http4s.server.middleware.CORS
+
 import java.util.concurrent.Executors
 import scala.concurrent.ExecutionContext
 import application.games.BlackJack.BlackJackConfig
@@ -40,7 +41,7 @@ object Main extends IOApp {
     .compile
     .drain
 
-  private def createConnection: IO[Connection[IO]] =
+  private def createConnection(implicit be: Blocker): IO[Connection[IO]] =
     Connection.make[IO](new ConnectionConfig {
       override def driver: String = "org.h2.Driver"
 
@@ -74,7 +75,8 @@ object Main extends IOApp {
 
     for {
       _            <- logger.info("Start application")
-      connection   <- createConnection
+      blocker      = Blocker.liftExecutionContext(executionContext)
+      connection   <- createConnection(blocker)
       _            <- logger.info("Connection created")
       _            <- Schema.createTables[IO](connection)
       _            <- logger.info("Tables created")
@@ -84,13 +86,11 @@ object Main extends IOApp {
       currencyRepo = repositories._2
       walletRepo   = repositories._3
       transRepo    = repositories._4
-      authService  <- IO(AuthService.make[IO](new AuthServiceConfig {
-        override val secretKey: String = "my-secret-key"
-
-        override val algo: JwtHmacAlgorithm = JwtAlgorithm.HS256
-
-        override val expirationSeconds: Long = 60 * 60 * 24
-      }))
+      authService  <- IO(AuthService.make[IO](AuthServiceConfig(
+        secretKey = "demo-secret-key",
+        algo = JwtAlgorithm.HS256,
+        expirationSeconds = 60 * 60 * 24
+      )))
 
       playerService <- IO(PlayerService.make[IO](playerRepo))
       walletService <- IO(WalletService.make[IO](connection, walletRepo, transRepo))

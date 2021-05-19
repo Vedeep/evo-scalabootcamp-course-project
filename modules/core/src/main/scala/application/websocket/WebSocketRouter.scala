@@ -17,7 +17,7 @@ import fs2.concurrent.Queue
 import io.circe.{Decoder, Encoder}
 import org.http4s.websocket.WebSocketFrame
 import application.common.EntityId
-import application.common.EntityId.implicits._
+import application.common.EntityId.implicits.json._
 import application.players.Player
 import application.common.Errors.{AppError, WSError, getErrorMessage}
 import application.common.Errors.WSErrors._
@@ -327,24 +327,24 @@ sealed trait WSCommand {
 }
 
 object WSCommands {
-  case class Command(id: Int, command: String) extends WSCommand
-  case class Ping(id: Int, command: String) extends WSCommand
-  case class GetUserInfo(id: Int, command: String) extends WSCommand
-  case class GetGames(id: Int, command: String) extends WSCommand
-  case class GetGameParams(gameId: EntityId)
-  case class GetGame(id: Int, command: String, params: GetGameParams) extends WSCommand
-  case class JoinGameParams(gameId: EntityId, seatId: EntityId)
-  case class JoinGame(id: Int, command: String, params: JoinGameParams) extends WSCommand
-  case class LeaveGameParams(gameId: EntityId, seatId: EntityId)
-  case class LeaveGame(id: Int, command: String, params: LeaveGameParams) extends WSCommand
-  case class SubscribeParams(gameId: EntityId)
-  case class Subscribe(id: Int, command: String, params: SubscribeParams) extends WSCommand
-  case class UnsubscribeParams(subId: EntityId)
-  case class Unsubscribe(id: Int, command: String, params: UnsubscribeParams) extends WSCommand
-  case class AddStakeParams(gameId: EntityId, handId: EntityId, amount: Amount)
-  case class AddStake(id: Int, command: String, params: AddStakeParams) extends WSCommand
-  case class AddCardParams(gameId: EntityId, handId: EntityId)
-  case class AddCard(id: Int, command: String, params: AddCardParams) extends WSCommand
+  final case class Command(id: Int, command: String) extends WSCommand
+  final case class Ping(id: Int, command: String) extends WSCommand
+  final case class GetUserInfo(id: Int, command: String) extends WSCommand
+  final case class GetGames(id: Int, command: String) extends WSCommand
+  final case class GetGameParams(gameId: EntityId)
+  final case class GetGame(id: Int, command: String, params: GetGameParams) extends WSCommand
+  final case class JoinGameParams(gameId: EntityId, seatId: EntityId)
+  final case class JoinGame(id: Int, command: String, params: JoinGameParams) extends WSCommand
+  final case class LeaveGameParams(gameId: EntityId, seatId: EntityId)
+  final case class LeaveGame(id: Int, command: String, params: LeaveGameParams) extends WSCommand
+  final case class SubscribeParams(gameId: EntityId)
+  final case class Subscribe(id: Int, command: String, params: SubscribeParams) extends WSCommand
+  final case class UnsubscribeParams(subId: EntityId)
+  final case class Unsubscribe(id: Int, command: String, params: UnsubscribeParams) extends WSCommand
+  final case class AddStakeParams(gameId: EntityId, handId: EntityId, amount: Amount)
+  final case class AddStake(id: Int, command: String, params: AddStakeParams) extends WSCommand
+  final case class AddCardParams(gameId: EntityId, handId: EntityId)
+  final case class AddCard(id: Int, command: String, params: AddCardParams) extends WSCommand
 }
 
 sealed trait WSResponseStatus
@@ -393,7 +393,7 @@ sealed trait WSResponse[T] {
   def error: Option[String]
 }
 
-case class WSResponseWrapper[T] private
+final case class WSResponseWrapper[T] private
 (
   id: Option[Int],
   status: WSResponseStatus,

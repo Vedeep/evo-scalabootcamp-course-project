@@ -56,7 +56,7 @@ object Cards {
       } yield result
   }
 
-  case class Card(suit: CardSuit, value: CardValue)
+  final case class Card(suit: CardSuit, value: CardValue)
 
   trait CardSuit {
     override def toString: String = getClass.getSimpleName.toLowerCase.replaceAll("[^A-z]+", "")

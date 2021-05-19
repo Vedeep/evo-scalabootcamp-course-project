@@ -8,11 +8,11 @@ import cats.syntax.all._
 import doobie.Transactor
 import application.common.Errors.DBErrors.{DuplicateValues, PlayerOrCurrencyNotFound}
 import application.common.Errors.WalletErrors.WalletIsNotFound
-import application.database.SqlStates.{DUPLICATE_VALUES, FOREIGN_KEY_VIOLATION}
+import application.database.SqlStates.{duplicateValues, foreignKeyViolation}
 
-case class WalletBalance(value: Double) extends AnyVal
+final case class WalletBalance(value: Double) extends AnyVal
 
-case class WalletModel
+final case class WalletModel
 (
   id: EntityId,
   playerId: EntityId,
@@ -27,7 +27,7 @@ trait WalletRepository[F[+_]] {
 }
 
 object WalletRepository {
-  import application.common.EntityId.implicits._
+  import application.common.EntityId.implicits.db._
 
   def make[F[+_] : ContextShift : Async](connection: Connection[F]): WalletRepository[F] = new WalletRepository[F] {
     override def create
@@ -36,22 +36,24 @@ object WalletRepository {
       currencyId: EntityId,
       balance: WalletBalance
     ): F[Either[DBError, WalletModel]] =
-      connection.runQuery(
-        sql"""INSERT INTO Wallets (id, playerId, currencyId, balance)
-             |VALUES (${EntityId()}, ${playerId}, ${currencyId}, ${balance.value});"""
-          .stripMargin
-          .update
-          .withGeneratedKeys[EntityId]("id")
-          .map { id =>
-            WalletModel(id, playerId, currencyId, balance)
-          }
-          .attemptSomeSqlState {
-            case DUPLICATE_VALUES => DuplicateValues
-            case FOREIGN_KEY_VIOLATION => PlayerOrCurrencyNotFound
-          }
-          .compile
-          .lastOrError
-      )
+      EntityId.of[F].flatMap { eid =>
+        connection.runQuery(
+          sql"""INSERT INTO Wallets (id, playerId, currencyId, balance)
+               |VALUES (${eid}, ${playerId}, ${currencyId}, ${balance.value});"""
+            .stripMargin
+            .update
+            .withGeneratedKeys[EntityId]("id")
+            .map { id =>
+              WalletModel(id, playerId, currencyId, balance)
+            }
+            .attemptSomeSqlState {
+              case `duplicateValues` => DuplicateValues
+              case `foreignKeyViolation` => PlayerOrCurrencyNotFound
+            }
+            .compile
+            .lastOrError
+        )
+      }
 
     override def getBalance(walletId: EntityId): F[Option[Double]] =
       connection.runQuery(

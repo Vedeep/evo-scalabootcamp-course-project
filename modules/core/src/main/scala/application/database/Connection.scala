@@ -22,21 +22,22 @@ trait ConnectionConfig {
 }
 
 object SqlStates {
-  val FOREIGN_KEY_VIOLATION = SqlState("23506")
-  val DUPLICATE_VALUES = SqlState("23506")
+  val foreignKeyViolation = SqlState("23506")
+  val duplicateValues = SqlState("23506")
 }
 
 object Connection {
-  def make[F[_] : ContextShift: Async](config: ConnectionConfig)(implicit EC: ExecutionContext): F[Connection[F]] = {
+  def make[F[_] : ContextShift: Async]
+  (config: ConnectionConfig)
+  (implicit ec: ExecutionContext, be: Blocker): F[Connection[F]] =
     Async[F].delay {
       for {
-        be <- Blocker[F]
         xa <- HikariTransactor.newHikariTransactor[F](
           driverClassName = config.driver,
           url = config.url,
           user = config.user,
           pass = config.password,
-          connectEC = EC,
+          connectEC = ec,
           blocker = be,
         )
       } yield xa
@@ -56,5 +57,4 @@ object Connection {
           }
       }
     }
-  }
 }

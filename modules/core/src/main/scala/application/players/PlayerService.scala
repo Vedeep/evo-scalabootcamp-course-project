@@ -6,20 +6,20 @@ import application.common.EntityId
 import application.common.Errors.AppError
 import application.database.{CurrencyCode, PlayerFirstName, PlayerLastName, PlayerNickName, PlayerRepository, WalletBalance}
 
-case class PlayerWallet
+final case class PlayerWallet
 (
   id: EntityId,
   balance: WalletBalance
 )
 
-case class PlayerWalletCurrency
+final case class PlayerWalletCurrency
 (
   id: EntityId,
   code: CurrencyCode,
   exchangeRate: Double
 )
 
-case class Player
+final case class Player
 (
   id: EntityId,
   firstName: PlayerFirstName,

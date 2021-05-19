@@ -45,7 +45,7 @@ object TransactionStatuses {
 }
 
 object TransactionRepository {
-  import application.common.EntityId.implicits._
+  import application.common.EntityId.implicits.db._
 
   def make[F[_] : Sync](connection: Connection[F]): TransactionRepository[F] =
     new TransactionRepository[F] {
@@ -83,7 +83,7 @@ object TransactionRepository {
             .update
             .withGeneratedKeys[EntityId]("id")
             .attemptSomeSqlState {
-              case FOREIGN_KEY_VIOLATION => WalletIsNotFound
+              case `foreignKeyViolation` => WalletIsNotFound
               case _                     => CreationError
             }
             .compile

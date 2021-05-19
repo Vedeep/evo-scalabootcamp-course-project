@@ -22,7 +22,7 @@ object Games {
   }
 
   trait GameEventData
-  case class GameEvent(
+  final case class GameEvent(
     target: GameEventTarget,
     data: GameEventData
   )
@@ -33,7 +33,7 @@ object Games {
 
   trait GameEventTarget
   object GameEventTargets {
-    case class TargetPlayer(id: EntityId) extends GameEventTarget
+    final case class TargetPlayer(id: EntityId) extends GameEventTarget
     case object TargetAll extends GameEventTarget
   }
 

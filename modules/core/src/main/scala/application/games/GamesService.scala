@@ -63,13 +63,13 @@ object LeaveGameOptions {
 }
 
 sealed trait JoinGameResult
-case class BlackJackJoinResult(gameId: EntityId, playerId: EntityId, seatId: EntityId) extends JoinGameResult
+final case class BlackJackJoinResult(gameId: EntityId, playerId: EntityId, seatId: EntityId) extends JoinGameResult
 
 sealed trait LeaveGameResult
-case class BlackJackLeaveResult(gameId: EntityId, playerId: EntityId, seatId: EntityId) extends LeaveGameResult
+final case class BlackJackLeaveResult(gameId: EntityId, playerId: EntityId, seatId: EntityId) extends LeaveGameResult
 
-case class AddStakeOptions(amount: Amount, handId: Option[EntityId] = None)
-case class AddCardOptions(handId: Option[EntityId] = None)
+final case class AddStakeOptions(amount: Amount, handId: Option[EntityId] = None)
+final case class AddCardOptions(handId: Option[EntityId] = None)
 
 
 object GamesService {
@@ -127,7 +127,8 @@ object GamesService {
         id          <- EntityId.of[F]
         topic       <- Topic[F, GameEvent](GameEvent.empty)
         interrupter <- SignallingRef[F, Boolean](false)
-        gameState   <- Ref.of[F, BlackJackGameState](BlackJackGameState(config.asInstanceOf[BlackJackConfig]))
+        state       <- BlackJackGameState[F](config.asInstanceOf[BlackJackConfig])
+        gameState   <- Ref.of[F, BlackJackGameState](state)
         deck        <- CardDeck.make[F]
         game = gameType match {
           case BlackJackType =>

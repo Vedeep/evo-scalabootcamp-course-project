@@ -11,7 +11,7 @@ import scala.util.Try
 case class EntityId(value: UUID) extends AnyVal
 
 object EntityId {
-  def apply(): EntityId = EntityId(UUID.randomUUID())
+//  def apply(): EntityId = EntityId(UUID.randomUUID())
 
   def fromString(s: String): Option[EntityId] =
     Try(UUID.fromString(s)).toOption.map(EntityId(_))
@@ -20,13 +20,17 @@ object EntityId {
     Sync[F].delay(EntityId(UUID.randomUUID()))
 
   object implicits {
-    implicit val entityIdEncoder: Encoder[EntityId] = (eid: EntityId) => Json.fromString(eid.value.toString)
-    implicit val entityIdDecoder: Decoder[EntityId] = Decoder.decodeString.emap { str =>
-      Either.catchNonFatal(UUID.fromString(str)).map(EntityId(_)).leftMap(_ => "Not parsable")
+    object json {
+      implicit val entityIdEncoder: Encoder[EntityId] = (eid: EntityId) => Json.fromString(eid.value.toString)
+      implicit val entityIdDecoder: Decoder[EntityId] = Decoder.decodeString.emap { str =>
+        Either.catchNonFatal(UUID.fromString(str)).map(EntityId(_)).leftMap(_ => "Not parsable")
+      }
     }
 
-    implicit val entityIdMeta: Meta[EntityId] = Meta[String].timap { v =>
-      EntityId(UUID.fromString(v))
-    } (_.value.toString)
+    object db {
+      implicit val entityIdMeta: Meta[EntityId] = Meta[String].timap { v =>
+        EntityId(UUID.fromString(v))
+      }(_.value.toString)
+    }
   }
 }

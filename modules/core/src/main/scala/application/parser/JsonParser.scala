@@ -11,7 +11,7 @@ import application.players.Player
 object JsonParser {
   import application.games.Games.GameTypes.implicits._
   import application.games.Cards.implicits._
-  import application.common.EntityId.implicits._
+  import application.common.EntityId.implicits.json._
   import application.games.Games.GameStatuses.implicits._
   import application.games.Cards.implicits._
 
