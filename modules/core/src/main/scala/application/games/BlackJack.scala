@@ -7,7 +7,7 @@ import cats.implicits._
 
 import scala.concurrent.duration._
 import application.players.Player
-import application.common.Errors.{AppError, BlackJackError}
+import application.common.Errors.{AppError, BlackJackError, WalletError}
 import application.common.Errors.BlackJackErrors._
 
 import scala.annotation.tailrec
@@ -19,9 +19,8 @@ import application.games.Games.GameStatuses._
 import application.games.Games.GameEventTargets._
 import application.games.Cards._
 import application.common.Finance._
-import application.database.TransactionTypes
-import application.database.TransactionTypes.Withdrawal
-import application.wallets.{WalletService, WalletTransaction, WalletTransactionAmount, WalletTransactionResult}
+import application.wallets.TransactionTypes.Withdrawal
+import application.wallets.{TransactionTypes, WalletService, WalletTransaction, WalletTransactionAmount, WalletTransactionResult}
 
 import java.time.Instant
 
@@ -318,7 +317,7 @@ object BlackJack {
         )).getOrElse(round)
       }.void
 
-    private def extendRoundState(): F[Unit] =
+    private def extendRoundState: F[Unit] =
       updateCurrentRound { round =>
         round.copy(
           nextStateTime = Instant.now().plusSeconds(config.roundStateSeconds)
@@ -382,11 +381,12 @@ object BlackJack {
 
               newRound.copy(
                 // @TODO
-                handActions = round.hands.foldLeft[Map[Hand, List[BlackJackAction]]](Map.empty) { (acc, hand) =>
-                  acc + (hand -> getHandActions(round, hand))
+                handActions = newRound.hands.foldLeft[Map[Hand, List[BlackJackAction]]](Map.empty) { (acc, hand) =>
+                  acc + (hand -> getHandActions(newRound, hand))
                 }
               )
             }
+            _ <- Concurrent[F].delay(println(result))
             _ <- EitherT.fromEither[F](result).semiflatMap(_ => sendState).value
           } yield result
       }
@@ -423,7 +423,6 @@ object BlackJack {
         }
       }
 
-
     def join(player: Player, seatId: EntityId): F[Either[BlackJackError, Unit]] =
       state.modifyOr[BlackJackError, Unit] { current =>
         for {
@@ -451,19 +450,29 @@ object BlackJack {
         case error  @ Left(_)  => Concurrent[F].pure(error)
       }
 
+    private def canSplitHand(round: BlackJackGameStateRound, hand: Hand): Boolean =
+      round.handCards.get(hand) match {
+        case Some(card1 :: card2 :: Nil) if round.hands.count(_.seatId == hand.seatId) == 1 =>
+          card1.value == card2.value
+        case _ => false
+      }
+
     private def getHandActions(round: BlackJackGameStateRound, hand: Hand): List[BlackJackAction] =
       round.state match {
         case BlackJackRoundStates.Stakes if !round.stakes.contains(hand) =>
           List(BlackJackActions.AddStake)
 
         case BlackJackRoundStates.Cards if round.stakes.contains(hand) =>
-          if (round.handActions.getOrElse(hand, Nil).contains(BlackJackActions.StandCards))
+          if (round.handStandCards.contains(hand))
             Nil
           else
             round.results.find(_.hand.contains(hand)) match {
               case Some(result) if result.points >= calculator.getMaxPoints =>
                 Nil
-              case _ => List(BlackJackActions.AddCard, BlackJackActions.StandCards)
+              case _ if canSplitHand(round, hand) =>
+                List(BlackJackActions.AddCard, BlackJackActions.StandCards, BlackJackActions.SplitHand)
+              case _ =>
+                List(BlackJackActions.AddCard, BlackJackActions.StandCards)
             }
 
         case _ => Nil
@@ -509,35 +518,49 @@ object BlackJack {
       }
     }
 
-    private def addHandCards(hand: Hand, cards: List[Card]): F[Either[BlackJackError, Unit]] =
-      state.modifyOr { current =>
-        current.currentRound match {
-          case Some(round) =>
-            val newCards = round.handCards.getOrElse(hand, Nil) ++ cards
-            val newHandCards = round.handCards + (hand -> newCards)
-            val results = calculator.calculateAll(round.dealerCards, newHandCards.toList, isFinally = false)
+    private def addHandCards(hand: Hand, cards: List[Card]): F[Either[BlackJackError, BlackJackGameState]] =
+      updateCurrentRound { round =>
+        val newCards = round.handCards.getOrElse(hand, Nil) ++ cards
+        val newHandCards = round.handCards + (hand -> newCards)
+        val results = calculator.calculateAll(round.dealerCards, newHandCards.toList, isFinally = false)
+        val handResult = results.find(_.hand.contains(hand)).get
+        val newStandCards =
+          if (handResult.points >= calculator.getMaxPoints) round.handStandCards + hand
+          else round.handStandCards
 
-            (current.copy(
-              currentRound = round.copy(
-                handCards = newHandCards,
-                results = results
-              ).some
-            ), ()).asRight
+        round.copy(
+          handCards = newHandCards,
+          results = results,
+          handStandCards = newStandCards
+        )
+      }
 
+    private def splitHandCards(hand: Hand, newHand: Hand, amount: Amount): F[Either[BlackJackError, BlackJackGameState]] =
+      updateCurrentRound { round =>
+        round.handCards.get(hand) match {
+          case Some(card1 :: card2 :: Nil) =>
+            val handCards = round.handCards + (hand -> List(card1)) + (hand -> List(card2))
 
-          case None => RoundNotStarted.asLeft
+            round.copy(
+              hands = newHand :: round.hands,
+              handCards = handCards,
+              stakes = round.stakes + (newHand -> amount),
+              results = calculator.calculateAll(round.dealerCards, handCards.toList, isFinally = false)
+            )
+          case _ => round
         }
       }
 
     def addCard(handId: EntityId, player: Player): F[Either[BlackJackError, BlackJackGameState]] =
       stopAcceptingHandActions(handId, player.id).flatMap { actions =>
         (for {
-          _     <- EitherT.cond[F](actions.contains(BlackJackActions.AddCard), (), ActionIsNotAllowed)
-          round <- EitherT.fromOptionF(
-            state.get.map(_.currentRound.filter(_.state == BlackJackRoundStates.Cards)),
-            RoundNotStarted
-          )
-          hand  <- EitherT.fromOption[F](round.hands.find(_.id == handId), HandIsNotFound)
+          _ <- EitherT.cond[F](actions.contains(BlackJackActions.AddCard), (), ActionIsNotAllowed)
+          roundAndHand <- EitherT(state.get.map(
+            getRoundAndHand(_, handId).filterOrElse({
+              case (round, _) => round.state == BlackJackRoundStates.Cards
+            }, RoundNotStarted)
+          ))
+          (_, hand) = roundAndHand
           cards <- EitherT.liftF[F, BlackJackError, List[Card]](getCards(1))
           _     <- EitherT(addHandCards(hand, cards))
           state <- EitherT.liftF[F, BlackJackError, BlackJackGameState](state.get)
@@ -552,6 +575,72 @@ object BlackJack {
         case error  @ Left(_)  =>
           startAcceptingHandActions(handId) *>
             Concurrent[F].pure(error)
+      }
+
+    def standCards(handId: EntityId, player: Player): F[Either[BlackJackError, BlackJackGameState]] =
+      stopAcceptingHandActions(handId, player.id).flatMap { actions =>
+        (for {
+          _ <- EitherT.cond[F](actions.contains(BlackJackActions.StandCards), (), ActionIsNotAllowed)
+          roundAndHand <- EitherT(state.get.map(
+            getRoundAndHand(_, handId).filterOrElse({
+              case (round, _) => round.state == BlackJackRoundStates.Cards
+            }, RoundNotStarted)
+          ))
+          (_, hand) = roundAndHand
+          _ <- EitherT(updateCurrentRound { round =>
+            round.copy(
+              handStandCards = round.handStandCards + hand
+            )
+          })
+          state <- EitherT.liftF[F, BlackJackError, BlackJackGameState](state.get)
+        } yield state).value
+      }.flatMap {
+        case result @ Right(_) =>
+          startAcceptingHandActions(handId) *>
+            sendState *>
+            Concurrent[F].pure(result)
+
+        case error  @ Left(_)  =>
+          startAcceptingHandActions(handId) *>
+            Concurrent[F].pure(error)
+      }
+
+    def splitHand(handId: EntityId, player: Player): F[Either[AppError, BlackJackGameState]] =
+      stopAcceptingHandActions(handId, player.id).flatMap { actions =>
+        (for {
+          _ <- EitherT.cond[F](actions.contains(BlackJackActions.SplitHand), (), ActionIsNotAllowed)
+          _ <- EitherT.liftF[F, AppError, Unit](extendRoundState)
+
+          roundAndHand <- EitherT[F, AppError, (BlackJackGameStateRound, Hand)](state.get.map(
+            getRoundAndHand(_, handId).filterOrElse({
+              case (round, _) => round.state == BlackJackRoundStates.Cards
+            }, RoundNotStarted)
+          ))
+          (round, hand) = roundAndHand
+          stake   <- EitherT.fromOption[F](round.stakes.get(hand), ActionIsNotAllowed)
+          newHand <- EitherT.liftF[F, AppError, Hand](Hand[F](hand.seatId, hand.holder))
+
+          _ <- EitherT[F, AppError, WalletTransactionResult](walletService.doTransaction(
+            hand.holder.wallet,
+            WalletTransaction(
+              Withdrawal,
+              WalletTransactionAmount(stake.value)
+            )
+          ))
+          _ <- EitherT[F, AppError, BlackJackGameState](splitHandCards(hand, newHand, stake))
+
+          state <- EitherT.liftF[F, AppError, BlackJackGameState](state.get)
+        } yield (newHand, state)).value
+      }.flatMap {
+        case result @ Right((newHand, state)) =>
+          startAcceptingHandActions(handId) *>
+          startAcceptingHandActions(newHand.id) *>
+            sendState *>
+            Concurrent[F].pure(state.asRight)
+
+        case error  @ Left(e)  =>
+          startAcceptingHandActions(handId) *>
+            Concurrent[F].pure(e.asLeft)
       }
 
     override def subscribe(subscriber: Player): Stream[F, GameEvent] =
@@ -598,6 +687,7 @@ object BlackJack {
     nextStateTime: Instant,
     dealerCards: List[Card] = Nil,
     handCards: Map[Hand, List[Card]] = Map.empty,
+    handStandCards: Set[Hand] = Set.empty,
     stakes: Map[Hand, Amount] = Map.empty,
     handActions: Map[Hand, List[BlackJackAction]] = Map.empty,
     state: BlackJackRoundState = BlackJackRoundStates.Stakes,
@@ -634,6 +724,9 @@ object BlackJack {
     }
     case object StandCards extends BlackJackAction {
       override def toString: String = "stand-cards"
+    }
+    case object SplitHand extends BlackJackAction {
+      override def toString: String = "split-hand"
     }
   }
 
@@ -780,18 +873,15 @@ trait Hand {
   def id: EntityId
   def seatId: EntityId
   def holder: Player
-  def main: Boolean
 }
 
 object Hand {
-  def apply[F[_]: Sync](_seatId: EntityId, _player: Player, _main: Boolean = true): F[Hand] =
+  def apply[F[_]: Sync](_seatId: EntityId, _player: Player): F[Hand] =
     EntityId.of[F].map { eid =>
       new Hand {
         override val id: EntityId = eid
 
         override val holder: Player = _player
-
-        override val main: Boolean = _main
 
         override def seatId: EntityId = _seatId
       }

@@ -1,15 +1,13 @@
-package application.database
+package application.wallets
 
-import cats.effect.Sync
 import application.common.EntityId
-import doobie.implicits._
-import doobie.syntax._
-import cats.syntax.all._
-import doobie.Transactor
-import application.common.Errors.AppError
-import application.common.Errors.DBErrors.CreationError
+import application.common.Errors.WalletError
 import application.common.Errors.WalletErrors.WalletIsNotFound
-import application.database.SqlStates._
+import application.database.Connection
+import cats.effect.Sync
+import cats.syntax.all._
+import doobie.implicits._
+import doobie.{ConnectionIO, Transactor}
 
 trait TransactionRepository[F[_]] {
   def create
@@ -21,7 +19,7 @@ trait TransactionRepository[F[_]] {
     balanceBefore: Double,
     balanceAfter: Double,
     status: TransactionStatus = TransactionStatuses.Completed
-  )(implicit cn: Option[Transactor[F]] = None): F[Either[AppError, EntityId]]
+  ): ConnectionIO[Either[WalletError, EntityId]]
 }
 
 trait TransactionType
@@ -47,7 +45,7 @@ object TransactionStatuses {
 object TransactionRepository {
   import application.common.EntityId.implicits.db._
 
-  def make[F[_] : Sync](connection: Connection[F]): TransactionRepository[F] =
+  def apply[F[_] : Sync]: TransactionRepository[F] =
     new TransactionRepository[F] {
       override def create
       (
@@ -58,11 +56,10 @@ object TransactionRepository {
         balanceBefore: Double,
         balanceAfter: Double,
         status: TransactionStatus
-      )(implicit cn: Option[Transactor[F]] = None): F[Either[AppError, EntityId]] = {
+      ): ConnectionIO[Either[WalletError, EntityId]] =
         for {
-          transId <- EntityId.of[F]
-          query =
-          sql"""INSERT INTO Transactions(
+          transId <- EntityId.of[ConnectionIO]
+          result  <- sql"""INSERT INTO Transactions(
             |id,
             |walletId,
             |transactionType,
@@ -83,15 +80,10 @@ object TransactionRepository {
             .update
             .withGeneratedKeys[EntityId]("id")
             .attemptSomeSqlState {
-              case `foreignKeyViolation` => WalletIsNotFound
-              case _                     => CreationError
+              case _ => WalletIsNotFound
             }
             .compile
             .lastOrError
-          result <- connection.runQuery(query)(cn)
         } yield result
-
-
-      }
     }
 }

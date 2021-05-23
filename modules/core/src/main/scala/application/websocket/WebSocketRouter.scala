@@ -8,10 +8,9 @@ import cats.effect.syntax.concurrent._
 import io.circe.Json
 import org.typelevel.log4cats.Logger
 import application.common.Finance.Amount
-import application.database.WalletBalance
-import application.games.{AddCardOptions, AddStakeOptions, BlackJackJoinResult, BlackJackLeaveResult, JoinGameResult, LeaveGameOptions, LeaveGameResult}
+import application.games.{AddCardOptions, AddStakeOptions, BlackJackJoinResult, BlackJackLeaveResult, GamesService, GamesStore, JoinGameOptions, JoinGameResult, LeaveGameOptions, LeaveGameResult, SplitHandOptions, StandCardsOptions}
 import application.players.PlayerService
-import application.wallets.WalletService
+import application.wallets.{WalletBalance, WalletService}
 import fs2.Stream
 import fs2.concurrent.Queue
 import io.circe.{Decoder, Encoder}
@@ -24,7 +23,6 @@ import application.common.Errors.WSErrors._
 import application.common.Errors.GameErrors._
 import application.games.BlackJack.{BlackJackGameState, BlackJackGameStateRound}
 import application.games.Games._
-import application.games.{GamesService, GamesStore, JoinGameOptions}
 import application.parser.JsonParser
 
 trait WebSocketRouter[F[_]] {
@@ -68,6 +66,8 @@ object WebSocketRouter {
         case "LeaveGame"    => decodeMessage[LeaveGame](message).leftMap(_ => WrongIncomingParams)
         case "AddStake"     => decodeMessage[AddStake](message).leftMap(_ => WrongIncomingParams)
         case "AddCard"      => decodeMessage[AddCard](message).leftMap(_ => WrongIncomingParams)
+        case "StandCards"   => decodeMessage[StandCards](message).leftMap(_ => WrongIncomingParams)
+        case "SplitHand"    => decodeMessage[SplitHand](message).leftMap(_ => WrongIncomingParams)
         case "GetGame"      => decodeMessage[GetGame](message).leftMap(_ => WrongIncomingParams)
         case "Subscribe"    => decodeMessage[Subscribe](message).leftMap(_ => WrongIncomingParams)
         case "Unsubscribe"  => decodeMessage[Unsubscribe](message).leftMap(_ => WrongIncomingParams)
@@ -190,6 +190,24 @@ object WebSocketRouter {
         case Left(e)       => session.replyError(reqId, e)
       }
 
+    private def standCards(reqId: Int, session: WebSocketSession[F], gameId: EntityId, handId: EntityId): F[Unit] =
+      (for {
+        game   <- EitherT(gamesStore.getGame(gameId).map(_.toRight(GameIsNotFound)))
+        result <- EitherT(gamesService.standCards(game, session.player, StandCardsOptions(handId.some)))
+      } yield result).value.flatMap {
+        case Right(result) => session.reply(reqId, WSResponseTypes.StakeAdded, JsonParser.encodeGameState(result))
+        case Left(e)       => session.replyError(reqId, e)
+      }
+
+    private def splitHand(reqId: Int, session: WebSocketSession[F], gameId: EntityId, handId: EntityId): F[Unit] =
+      (for {
+        game   <- EitherT(gamesStore.getGame(gameId).map(_.toRight(GameIsNotFound)))
+        result <- EitherT(gamesService.splitHand(game, session.player, SplitHandOptions(handId.some)))
+      } yield result).value.flatMap {
+        case Right(result) => session.reply(reqId, WSResponseTypes.StakeAdded, JsonParser.encodeGameState(result))
+        case Left(e)       => session.replyError(reqId, e)
+      }
+
     override def execute(message: String, session: WebSocketSession[F]): F[Unit] =
       parseMessage(message) match {
         case Right(command) => command match {
@@ -208,6 +226,10 @@ object WebSocketRouter {
           case AddStake(id, _, AddStakeParams(gameId, handId, amount)) => addStake(id, session, gameId, handId, amount)
 
           case AddCard(id, _, AddCardParams(gameId, handId)) => addCard(id, session, gameId, handId)
+
+          case StandCards(id, _, StandCardsParams(gameId, handId)) => standCards(id, session, gameId, handId)
+
+          case SplitHand(id, _, SplitHandParams(gameId, handId)) => splitHand(id, session, gameId, handId)
 
           case Subscribe(id, _, SubscribeParams(gameId)) => subscribeGame(id, session, gameId)
 
@@ -345,6 +367,10 @@ object WSCommands {
   final case class AddStake(id: Int, command: String, params: AddStakeParams) extends WSCommand
   final case class AddCardParams(gameId: EntityId, handId: EntityId)
   final case class AddCard(id: Int, command: String, params: AddCardParams) extends WSCommand
+  final case class StandCardsParams(gameId: EntityId, handId: EntityId)
+  final case class StandCards(id: Int, command: String, params: StandCardsParams) extends WSCommand
+  final case class SplitHandParams(gameId: EntityId, handId: EntityId)
+  final case class SplitHand(id: Int, command: String, params: SplitHandParams) extends WSCommand
 }
 
 sealed trait WSResponseStatus

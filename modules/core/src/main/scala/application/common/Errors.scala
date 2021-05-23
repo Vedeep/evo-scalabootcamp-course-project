@@ -24,7 +24,10 @@ object Errors {
 
     case DBErrors.DuplicateValues => "Values is duplicate"
     case DBErrors.CreationError => "Creation error"
-    case DBErrors.PlayerOrCurrencyNotFound => "Player or currency is not found"
+
+    case UserErrors.PlayerOrCurrencyNotFound => "Player or currency is not found"
+    case UserErrors.UserIsNotFound => "Player is not found"
+    case UserErrors.UserCannotBeCreated => "Player cannot be created"
 
     case WalletErrors.WalletIsNotFound => "Wallet is not found"
     case WalletErrors.WalletBalanceIsLessThanNeed => "Wallet balance is less than amount"
@@ -40,6 +43,8 @@ object Errors {
 
   object UserErrors {
     case object UserIsNotFound extends UserError
+    case object PlayerOrCurrencyNotFound extends UserError
+    case object UserCannotBeCreated extends UserError
   }
 
   object WSErrors {
@@ -68,11 +73,12 @@ object Errors {
   object DBErrors {
     case object DuplicateValues extends DBError
     case object CreationError extends DBError
-    case object PlayerOrCurrencyNotFound extends DBError
   }
 
   object WalletErrors {
     case object WalletIsNotFound extends WalletError
+    case object WalletAlreadyExists extends WalletError
+    case object WalletCreationError extends WalletError
     case object WalletBalanceIsLessThanNeed extends WalletError
   }
 }

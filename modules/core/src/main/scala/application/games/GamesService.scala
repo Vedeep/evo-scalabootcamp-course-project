@@ -40,6 +40,8 @@ sealed trait GamesService[F[+_]] {
   def createStore: F[GamesStore[F]]
   def addStake(game: Game[F], player: Player, options: AddStakeOptions): F[Either[AppError, GameState]]
   def addCard(game: Game[F], player: Player, options: AddCardOptions): F[Either[AppError, GameState]]
+  def standCards(game: Game[F], player: Player, options: StandCardsOptions): F[Either[AppError, GameState]]
+  def splitHand(game: Game[F], player: Player, options: SplitHandOptions): F[Either[AppError, GameState]]
 }
 
 trait JoinGameOptions {
@@ -70,6 +72,8 @@ final case class BlackJackLeaveResult(gameId: EntityId, playerId: EntityId, seat
 
 final case class AddStakeOptions(amount: Amount, handId: Option[EntityId] = None)
 final case class AddCardOptions(handId: Option[EntityId] = None)
+final case class StandCardsOptions(handId: Option[EntityId] = None)
+final case class SplitHandOptions(handId: Option[EntityId] = None)
 
 
 object GamesService {
@@ -195,6 +199,30 @@ object GamesService {
           options.handId match {
             case Some(handId) =>
               gameInstance.addCard(handId, player)
+
+            case None =>
+              Concurrent[F].pure(WrongIncomingParams.asLeft)
+          }
+      }
+
+    override def standCards(game: Game[F], player: Player, options: StandCardsOptions): F[Either[AppError, GameState]] =
+      game match {
+        case gameInstance: BlackJackGame[F] =>
+          options.handId match {
+            case Some(handId) =>
+              gameInstance.standCards(handId, player)
+
+            case None =>
+              Concurrent[F].pure(WrongIncomingParams.asLeft)
+          }
+      }
+
+    override def splitHand(game: Game[F], player: Player, options: SplitHandOptions): F[Either[AppError, GameState]] =
+      game match {
+        case gameInstance: BlackJackGame[F] =>
+          options.handId match {
+            case Some(handId) =>
+              gameInstance.splitHand(handId, player)
 
             case None =>
               Concurrent[F].pure(WrongIncomingParams.asLeft)

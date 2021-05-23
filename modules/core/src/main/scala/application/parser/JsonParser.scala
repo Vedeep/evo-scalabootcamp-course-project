@@ -54,7 +54,6 @@ object JsonParser {
                 ("id", hand.holder.id.asJson),
                 ("nick", hand.holder.nickName.value.asJson)
               )),
-              ("main", hand.main.asJson),
               (
                 "cards",
                 round.handCards.getOrElse(hand, Nil).asJson

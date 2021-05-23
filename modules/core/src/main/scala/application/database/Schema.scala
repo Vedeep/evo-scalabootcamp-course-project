@@ -7,14 +7,14 @@ import cats.syntax.all._
 
 object Schema {
   def createTables[F[_]](connection: Connection[F])(implicit BF: Bracket[F, Throwable]): F[Unit] =
-    connection.transaction { cn =>
-      createPlayerTable.transact(cn) *>
-      createCurrencyTable.transact(cn) *>
-      createWalletTable.transact(cn) *>
-      createGameTable.transact(cn) *>
-      createGameRoundTable.transact(cn) *>
-      createTransactionTable.transact(cn)
-    }
+    connection.runQuery(
+      createPlayerTable *>
+      createCurrencyTable *>
+      createWalletTable *>
+      createGameTable *>
+      createGameRoundTable *>
+      createTransactionTable
+    )
 
   private def createPlayerTable: ConnectionIO[Unit] =
     sql"""CREATE TABLE IF NOT EXISTS Players(

@@ -4,7 +4,8 @@ import cats.Monad
 import cats.data.EitherT
 import application.common.EntityId
 import application.common.Errors.AppError
-import application.database.{CurrencyCode, PlayerFirstName, PlayerLastName, PlayerNickName, PlayerRepository, WalletBalance}
+import application.database.{Connection, CurrencyCode}
+import application.wallets.WalletBalance
 
 final case class PlayerWallet
 (
@@ -34,10 +35,10 @@ trait PlayerService[F[+_]] {
 }
 
 object PlayerService {
-  def make[F[+_] : Monad](playerRepo: PlayerRepository[F]): PlayerService[F] = new PlayerService[F] {
+  def make[F[+_] : Monad](connection: Connection[F], playerRepo: PlayerRepository[F]): PlayerService[F] = new PlayerService[F] {
     override def getPlayerById(id: EntityId): F[Either[AppError, Player]] =
       (for {
-        data <- EitherT(playerRepo.getById(id))
+        data <- EitherT(connection.runQuery(playerRepo.getById(id)))
         (playerModel, walletModel, currencyModel) = data
       } yield Player(
         playerModel.id,
@@ -56,9 +57,3 @@ object PlayerService {
       )).value
   }
 }
-
-trait PlayerError
-object PlayerErrors {
-
-}
-

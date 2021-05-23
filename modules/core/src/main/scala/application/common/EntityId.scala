@@ -11,8 +11,6 @@ import scala.util.Try
 case class EntityId(value: UUID) extends AnyVal
 
 object EntityId {
-//  def apply(): EntityId = EntityId(UUID.randomUUID())
-
   def fromString(s: String): Option[EntityId] =
     Try(UUID.fromString(s)).toOption.map(EntityId(_))
 

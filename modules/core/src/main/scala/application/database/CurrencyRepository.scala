@@ -7,6 +7,7 @@ import application.common.Errors.DBErrors.{CreationError, DuplicateValues}
 import application.database.SqlStates.duplicateValues
 import cats.effect.Sync
 import cats.syntax.all._
+import doobie.ConnectionIO
 
 final case class CurrencyName(value: String) extends AnyVal
 final case class CurrencyCode(value: String) extends AnyVal
@@ -27,39 +28,38 @@ trait CurrencyRepository[F[+_]] {
     code: CurrencyCode,
     exchangeRate: Double,
     main: Boolean = false
-  ): F[Either[DBError, CurrencyModel]]
+  ): ConnectionIO[Either[DBError, CurrencyModel]]
 }
 
 object CurrencyRepository {
   import application.common.EntityId.implicits.db._
 
-  def make[F[+_] : Sync](connection: Connection[F]): CurrencyRepository[F] = new CurrencyRepository[F] {
+  def apply[F[+_] : Sync]: CurrencyRepository[F] = new CurrencyRepository[F] {
     override def create
     (
       name: CurrencyName,
       code: CurrencyCode,
       exchangeRate: Double,
       main: Boolean = false
-    ): F[Either[DBError, CurrencyModel]] =
-      EntityId.of[F].flatMap { eid =>
-        connection.runQuery(
-          sql"""INSERT INTO Currencies (id, name, code, exchangeRate, main)
-               |VALUES (${eid}, ${name.value}, ${code.value},
-               |${exchangeRate}, ${main});"""
-            .stripMargin
-            .update
-            .withGeneratedKeys[EntityId]("id")
-            .map { id =>
-              CurrencyModel(id, name, code, exchangeRate, main)
-            }
-            .attemptSomeSqlState {
-              case `duplicateValues` => DuplicateValues
-              case _                => CreationError
-            }
-            .compile
-            .lastOrError
-        )
-      }
+    ): ConnectionIO[Either[DBError, CurrencyModel]] =
+      for {
+        eid    <- EntityId.of[ConnectionIO]
+        result <- sql"""INSERT INTO Currencies (id, name, code, exchangeRate, main)
+                       |VALUES (${eid}, ${name.value}, ${code.value},
+                       |${exchangeRate}, ${main});"""
+          .stripMargin
+          .update
+          .withGeneratedKeys[EntityId]("id")
+          .map { id =>
+            CurrencyModel(id, name, code, exchangeRate, main)
+          }
+          .attemptSomeSqlState {
+            case `duplicateValues` => DuplicateValues
+            case _                => CreationError
+          }
+          .compile
+          .lastOrError
+      } yield result
 
   }
 }
