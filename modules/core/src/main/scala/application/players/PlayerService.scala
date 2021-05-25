@@ -4,8 +4,8 @@ import cats.Monad
 import cats.data.EitherT
 import application.common.EntityId
 import application.common.Errors.AppError
-import application.database.{Connection, CurrencyCode}
-import application.wallets.WalletBalance
+import application.database.Connection
+import application.wallets.{CurrencyCode, WalletBalance}
 
 final case class PlayerWallet
 (

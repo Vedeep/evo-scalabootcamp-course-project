@@ -1,13 +1,12 @@
-package application.database
+package application.wallets
 
 import application.common.EntityId
 import application.common.Errors.DBError
-import doobie.implicits._
 import application.common.Errors.DBErrors.{CreationError, DuplicateValues}
 import application.database.SqlStates.duplicateValues
 import cats.effect.Sync
-import cats.syntax.all._
 import doobie.ConnectionIO
+import doobie.implicits._
 
 final case class CurrencyName(value: String) extends AnyVal
 final case class CurrencyCode(value: String) extends AnyVal

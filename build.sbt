@@ -54,6 +54,7 @@ lazy val core = (project in file("modules/core"))
       "org.tpolecat" %% "doobie-hikari" % doobieVersion,
       "ch.qos.logback" % "logback-classic" % "1.2.3",
       "com.github.jwt-scala" %% "jwt-core" % jwtVersion,
+      "com.github.pureconfig" %% "pureconfig" % "0.15.0",
 
       // Tests
       "org.scalatestplus" %% "scalatestplus-scalacheck" % scalaTestVersion % Test

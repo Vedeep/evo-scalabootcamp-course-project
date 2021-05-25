@@ -3,17 +3,16 @@ package application.auth
 import cats.effect.Sync
 import pdi.jwt.algorithms.JwtHmacAlgorithm
 import application.common.EntityId
-import pdi.jwt.{Jwt, JwtClaim}
+import pdi.jwt.{Jwt, JwtAlgorithm, JwtClaim}
 
 import java.time.Clock
-import scala.util.{Failure, Success}
 
 trait AuthService[F[_]] {
   def getPlayerIdFromToken(token: String): F[Option[EntityId]]
   def createToken(playerId: EntityId): F[String]
 }
 
-final case class AuthServiceConfig(secretKey: String, algo: JwtHmacAlgorithm, expirationSeconds: Long)
+final case class AuthServiceConfig(secretKey: String, expirationSeconds: Long, algo: JwtHmacAlgorithm = JwtAlgorithm.HS256)
 
 final case class TokenData(id: EntityId)
 

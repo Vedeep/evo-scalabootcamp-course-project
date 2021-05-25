@@ -2,9 +2,8 @@ package application.players
 
 import application.common.EntityId
 import application.common.Errors.UserErrors.{UserCannotBeCreated, UserIsNotFound}
-import application.common.Errors.{UserError}
-import application.database.{CurrencyModel}
-import application.wallets.WalletModel
+import application.common.Errors.UserError
+import application.wallets.{CurrencyModel, WalletModel}
 import cats.effect.Sync
 import doobie.ConnectionIO
 import doobie.implicits._

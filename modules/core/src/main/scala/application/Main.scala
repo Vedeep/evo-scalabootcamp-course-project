@@ -7,7 +7,7 @@ import io.circe.Json
 import org.http4s.{HttpApp, HttpRoutes}
 import org.http4s.server.blaze.BlazeServerBuilder
 import org.http4s.dsl.io._
-import application.database.{Connection, ConnectionConfig, CurrencyCode, CurrencyModel, CurrencyName, CurrencyRepository, Schema}
+import application.database.{Connection, ConnectionConfig, Schema}
 import application.games.Games.GameTypes.BlackJackType
 import application.games.{GamesService, GamesStore}
 import application.websocket.{WebSocketRouter, WebSocketServer}
@@ -20,45 +20,45 @@ import application.games.BlackJack.BlackJackConfig
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import pdi.jwt.JwtAlgorithm
-import pdi.jwt.algorithms.JwtHmacAlgorithm
 import application.auth.{AuthService, AuthServiceConfig}
 import application.common.Errors.AppError
+import application.config.{ConfigService, DatabaseConfig, ServerConfig}
 import application.players.{PlayerFirstName, PlayerLastName, PlayerModel, PlayerNickName, PlayerRepository, PlayerService}
-import application.wallets.{TransactionRepository, WalletBalance, WalletModel, WalletRepository, WalletService}
+import application.wallets.{CurrencyCode, CurrencyModel, CurrencyName, CurrencyRepository, TransactionRepository, WalletBalance, WalletModel, WalletRepository, WalletService}
 
 
 object Main extends IOApp {
   override implicit val executionContext: ExecutionContext
-    = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(10))
+    = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(8))
 
   private def createLogger: Logger[IO] =
     Slf4jLogger.getLogger[IO]
 
-  private def createServer(httpApp: HttpApp[IO]): IO[Unit] =
+  private def createServer(config: ServerConfig, httpApp: HttpApp[IO]): IO[Unit] =
     BlazeServerBuilder[IO](ExecutionContext.global)
-    .bindHttp(port = 9876, host = "localhost")
+    .bindHttp(port = config.port, host = config.host)
     .withHttpApp(CORS(httpApp))
     .serve
     .compile
     .drain
 
-  private def createConnection(implicit be: Blocker): Resource[IO, Connection[IO]] =
+  private def createConnection
+  (config: DatabaseConfig)
+  (implicit be: Blocker): Resource[IO, Connection[IO]] =
     Connection[IO](new ConnectionConfig {
-      override def driver: String = "org.h2.Driver"
+      override def driver: String = config.driver
 
-      override def url: String = "jdbc:h2:mem:test;DB_CLOSE_DELAY=-1"
+      override def url: String = config.url
 
-      override def user: String = ""
+      override def user: String = config.user
 
-      override def password: String = ""
+      override def password: String = config.password
 
-      override def poolSize: Int = 4
+      override def poolSize: Int = config.poolSize
     })
 
   private def createRepositories
-  (
-    connection: Connection[IO]
-  )(implicit logger: Logger[IO]): IO[(
+  (implicit logger: Logger[IO]): IO[(
     PlayerRepository[IO],
     CurrencyRepository[IO],
     WalletRepository[IO],
@@ -74,23 +74,21 @@ object Main extends IOApp {
   override def run(args: List[String]): IO[ExitCode] = {
     implicit val logger: Logger[IO] = createLogger
     implicit val blocker: Blocker = Blocker.liftExecutionContext(executionContext)
+    val config = ConfigService.getConfig
 
-    createConnection.use { connection =>
+    createConnection(config.db).use { connection =>
       for {
         _            <- logger.info("Start application")
         _            <- logger.info("Connection created")
         _            <- Schema.createTables[IO](connection)
         _            <- logger.info("Tables created")
-        repositories <- createRepositories(connection)
+        repositories <- createRepositories
         _            <- logger.info("Repositories created")
-        playerRepo   = repositories._1
-        currencyRepo = repositories._2
-        walletRepo   = repositories._3
-        transRepo    = repositories._4
+        (playerRepo, currencyRepo, walletRepo, transRepo) = repositories
+
         authService  <- IO(AuthService.make[IO](AuthServiceConfig(
-          secretKey = "demo-secret-key",
-          algo = JwtAlgorithm.HS256,
-          expirationSeconds = 60 * 60 * 24
+          secretKey = config.auth.secretKey,
+          expirationSeconds = config.auth.expirationSeconds
         )))
 
         playerService <- IO(PlayerService.make[IO](connection, playerRepo))
@@ -101,7 +99,7 @@ object Main extends IOApp {
         wsRoutes = WebSocketServer.make[IO](authService, playerService, gamesService, gamesStore, router)
         demoRoutes <- Demo.start(connection, authService, gamesService, gamesStore, playerRepo, currencyRepo, walletRepo)
         httpApp  = (wsRoutes <+> demoRoutes).orNotFound
-        _ <- createServer(httpApp)
+        _ <- createServer(config.server, httpApp)
       } yield ExitCode.Success
     }
   }
