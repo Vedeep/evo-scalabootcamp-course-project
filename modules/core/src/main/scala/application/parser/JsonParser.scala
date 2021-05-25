@@ -52,7 +52,8 @@ object JsonParser {
               ("seatId", hand.seatId.asJson),
               ("holder", Json.obj(
                 ("id", hand.holder.id.asJson),
-                ("nick", hand.holder.nickName.value.asJson)
+                ("nick", hand.holder.nickName.value.asJson),
+                ("currency", hand.holder.currency.code.value.asJson)
               )),
               (
                 "cards",

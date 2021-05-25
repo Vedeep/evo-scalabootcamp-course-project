@@ -21,7 +21,7 @@ import application.players.Player
 import application.common.Errors.{AppError, WSError, getErrorMessage}
 import application.common.Errors.WSErrors._
 import application.common.Errors.GameErrors._
-import application.games.BlackJack.{BlackJackGameState, BlackJackGameStateRound}
+import application.games.BlackJack.{BlackJackGameState}
 import application.games.Games._
 import application.parser.JsonParser
 

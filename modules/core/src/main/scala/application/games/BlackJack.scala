@@ -273,7 +273,7 @@ object BlackJack {
       }
 
       (for {
-        newCards <- getCards(1).map(_ ++ cards)
+        newCards <- getCards(1).map(cards ++ _)
         points   <- Concurrent[F].delay(calculator.getWinPoints(newCards))
       } yield (newCards, points)).flatMap {
         case (newCards, points) =>
