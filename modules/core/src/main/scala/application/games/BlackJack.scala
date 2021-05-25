@@ -230,6 +230,10 @@ object BlackJack {
             case BlackJackRoundStates.Cards  => endRound
             case _ => Concurrent[F].pure()
           }
+        } else if (round.state == BlackJackRoundStates.Cards && allHandsStood(round)) {
+          endRound
+        } else if (round.state == BlackJackRoundStates.Stakes && allSeatsPlaced(round)) {
+          setRoundStateAsCards
         } else
           Concurrent[F].pure()
       }.value.void
@@ -238,8 +242,8 @@ object BlackJack {
       stopAcceptingActions *>
         EitherT(getCurrentRound).semiflatMap { round =>
           for {
-            dealerCards <- getDealerCards(round.dealerCards)
             handCards   <- Concurrent[F].delay(round.handCards.filterNot(_._2.isEmpty).toList)
+            dealerCards <- getDealerCards(round.dealerCards, handCards)
             results = calculator.calculateAll(
               dealerCards,
               handCards
@@ -258,15 +262,23 @@ object BlackJack {
 
     private def getCards(count: Int): F[List[Card]] = deck.getCards(count)
 
-    private def getDealerCards(cards: List[Card]): F[List[Card]] = {
-      val maxPoints = calculator.getMaxPoints
+    private def getDealerCards(cards: List[Card], handCards: List[(Hand, List[Card])], min: Option[Points] = None): F[List[Card]] = {
+      val minPoints = min.getOrElse[Points] {
+        calculator
+          .calculateAll(cards, handCards)
+          .filterNot(r => r.hand.isEmpty || r.points > calculator.getMaxPoints)
+          .minByOption(_.points)
+          .map(_.points)
+          .getOrElse(0)
+      }
 
       (for {
         newCards <- getCards(1).map(_ ++ cards)
         points   <- Concurrent[F].delay(calculator.getWinPoints(newCards))
       } yield (newCards, points)).flatMap {
         case (newCards, points) =>
-          if ((points + 6) < maxPoints) getDealerCards(newCards) else Concurrent[F].pure(newCards)
+          if (minPoints > points) getDealerCards(newCards, handCards, minPoints.some)
+          else Concurrent[F].pure(newCards)
       }
     }
 
@@ -379,14 +391,17 @@ object BlackJack {
                 results = results
               )
 
+              val handActions = newRound.hands.foldLeft[Map[Hand, List[BlackJackAction]]](Map.empty) { (acc, hand) =>
+                acc + (hand -> getHandActions(newRound, hand))
+              }
+
+              val handStandCards = handActions.filter(_._2.isEmpty).keys.toSet
+
               newRound.copy(
-                // @TODO
-                handActions = newRound.hands.foldLeft[Map[Hand, List[BlackJackAction]]](Map.empty) { (acc, hand) =>
-                  acc + (hand -> getHandActions(newRound, hand))
-                }
+                handActions = handActions,
+                handStandCards = handStandCards
               )
             }
-            _ <- Concurrent[F].delay(println(result))
             _ <- EitherT.fromEither[F](result).semiflatMap(_ => sendState).value
           } yield result
       }
@@ -478,6 +493,12 @@ object BlackJack {
         case _ => Nil
       }
 
+    private def allHandsStood(round: BlackJackGameStateRound): Boolean =
+      round.hands.filter(round.stakes.contains).forall(round.handStandCards.contains)
+
+    private def allSeatsPlaced(round: BlackJackGameStateRound): Boolean =
+      round.hands.forall(round.stakes.contains)
+
     private def getRoundAndHand
     (
       state: BlackJackGameState,
@@ -539,7 +560,7 @@ object BlackJack {
       updateCurrentRound { round =>
         round.handCards.get(hand) match {
           case Some(card1 :: card2 :: Nil) =>
-            val handCards = round.handCards + (hand -> List(card1)) + (hand -> List(card2))
+            val handCards = round.handCards + (hand -> List(card1)) + (newHand -> List(card2))
 
             round.copy(
               hands = newHand :: round.hands,

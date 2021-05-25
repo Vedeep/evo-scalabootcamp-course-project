@@ -150,9 +150,9 @@ object Demo {
 
         override def playerSeatsLimit: Int = 1
 
-        override def roundStateSeconds: Int = 60
+        override def roundStateSeconds: Int = 10
 
-        override def roundIntervalSeconds: Int = 10
+        override def roundIntervalSeconds: Int = 5
       }))
       _ <- games.traverse(_.start.start)
       _ <- games.traverse(gameStore.addGame)

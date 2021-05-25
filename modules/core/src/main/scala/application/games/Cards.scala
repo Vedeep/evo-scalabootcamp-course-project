@@ -18,49 +18,24 @@ object Cards {
     import CardSuits._
     import CardValues._
 
-//    private def createDeck: List[Card] = Random.shuffle(for {
-//      suit <- List(Club, Diamond, Hearth, Spade)
-//      value <- List(
-//        Two,
-//        Three,
-//        Four,
-//        Five,
-//        Six,
-//        Seven,
-//        Eight,
-//        Nine,
-//        Ten,
-//        Jack,
-//        Queen,
-//        King,
-//        Ace,
-//      )
-//    } yield Card(suit, value))
-
-    private def createDeck: List[Card] = {
-      val deck = for {
-        suit <- List(Club, Diamond, Hearth, Spade)
-        value <- List(
-          Two,
-          Three,
-          Four,
-          Five,
-          Six,
-          Seven,
-          Eight,
-          Nine,
-          Ten,
-          Jack,
-          Queen,
-          King,
-          Ace,
-        )
-      } yield Card(suit, value)
-
-      deck.sortWith {
-        case (c1, c2) => c1.value.toString > c2.value.toString
-      }
-    }
+    private def createDeck: List[Card] = Random.shuffle(for {
+      suit <- List(Club, Diamond, Hearth, Spade)
+      value <- List(
+        Two,
+        Three,
+        Four,
+        Five,
+        Six,
+        Seven,
+        Eight,
+        Nine,
+        Ten,
+        Jack,
+        Queen,
+        King,
+        Ace,
+      )
+    } yield Card(suit, value))
 
     def make[F[_] : Sync]: F[CardDeck[F]] =
       for {
